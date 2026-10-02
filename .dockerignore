@@ -1,0 +1,11 @@
+.git
+.github
+docs
+hack
+plugin
+web/node_modules
+web/dist
+*.tar.gz
+*.sha256
+*.md
+!README.md

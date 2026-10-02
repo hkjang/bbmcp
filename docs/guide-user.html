@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bbmcp 사용자 가이드 — API 키 발급, MCP 연결, 승인 요청</title>
+<meta name="description" content="bbmcp 사용자 가이드. 로그인, 개인 API 키 발급과 회전, MCP 클라이언트 연결, 승인 요청 처리, Bitbucket 개인 토큰 등록, 내 권한 확인 방법을 화면과 함께 설명합니다.">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#1f6feb">
+<link rel="canonical" href="https://hkjang.github.io/bbmcp/guide-user.html">
+
+<meta property="og:type" content="article">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:title" content="bbmcp 사용자 가이드">
+<meta property="og:description" content="API 키 발급과 회전, MCP 클라이언트 연결, 승인 요청 처리까지 사용자가 알아야 할 전부.">
+<meta property="og:url" content="https://hkjang.github.io/bbmcp/guide-user.html">
+<meta property="og:image" content="https://hkjang.github.io/bbmcp/assets/social-card.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="stylesheet" href="styles.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      "headline": "bbmcp 사용자 가이드",
+      "description": "bbmcp 개인 사용자를 위한 안내: 로그인, API 키 발급과 회전, MCP 클라이언트 연결, 승인 요청, 개인 Bitbucket 토큰 등록.",
+      "inLanguage": "ko",
+      "author": { "@type": "Person", "name": "hkjang" },
+      "about": { "@type": "SoftwareApplication", "name": "bbmcp" },
+      "url": "https://hkjang.github.io/bbmcp/guide-user.html"
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "bbmcp", "item": "https://hkjang.github.io/bbmcp/" },
+        { "@type": "ListItem", "position": 2, "name": "사용자 가이드", "item": "https://hkjang.github.io/bbmcp/guide-user.html" }
+      ]
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+
+<header class="site">
+  <div class="wrap nav">
+    <a class="brand" href="./">
+      <img src="assets/logo-192.png" alt="bbmcp 로고" width="32" height="32">
+      bbmcp
+    </a>
+    <nav aria-label="주요">
+      <a href="./">홈</a>
+      <a href="guide-user.html">사용자 가이드</a>
+      <a href="guide-admin.html">관리자 가이드</a>
+      <a href="https://github.com/hkjang/bbmcp">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main" class="wrap guide">
+
+<aside class="toc" aria-label="목차">
+  <strong>목차</strong>
+  <ol>
+    <li><a href="#login">1. 로그인</a></li>
+    <li><a href="#overview">2. 개요 화면</a></li>
+    <li><a href="#keys">3. API 키 발급과 회전</a></li>
+    <li class="sub"><a href="#keys-create">3.1 발급</a></li>
+    <li class="sub"><a href="#keys-rotate">3.2 회전</a></li>
+    <li class="sub"><a href="#keys-scope">3.3 역할과 스코프</a></li>
+    <li><a href="#connect">4. MCP 클라이언트 연결</a></li>
+    <li><a href="#tools">5. 사용 가능한 도구</a></li>
+    <li><a href="#approvals">6. 승인 요청</a></li>
+    <li><a href="#pat">7. Bitbucket 개인 토큰</a></li>
+    <li><a href="#permissions">8. 내 권한 확인</a></li>
+    <li><a href="#ai">9. AI 리뷰 보조</a></li>
+    <li><a href="#audit">10. 내 활동 기록</a></li>
+    <li><a href="#settings">11. 개인 설정</a></li>
+    <li><a href="#troubleshooting">12. 오류 메시지</a></li>
+  </ol>
+</aside>
+
+<article class="guide-body">
+  <h1>사용자 가이드</h1>
+  <p class="section-lead">
+    bbmcp 는 AI 도구가 Bitbucket 을 다룰 때 <strong>내가 볼 수 있는 것만</strong> 보도록 막아 주는
+    게이트웨이입니다. 이 문서는 사용자가 직접 하는 일(키 발급, 클라이언트 연결, 승인)을 다룹니다.
+    서비스 설정은 <a href="guide-admin.html">관리자 가이드</a>를 보십시오.
+  </p>
+
+  <h2 id="login">1. 로그인</h2>
+  <p>
+    브라우저로 사내 bbmcp 주소를 열면 로그인 화면이 나옵니다. Keycloak SSO 가 켜져 있으면
+    <strong>이미 SSO 세션이 있는 경우 자동으로 로그인</strong>됩니다(사일런트 SSO). 자동으로 들어가지지
+    않으면 <span class="kbd">Keycloak 계정으로 로그인</span> 을 누르십시오.
+  </p>
+  <figure>
+    <img src="screenshots/login.png" alt="bbmcp 로그인 화면. 하단에 서비스 버전, 빌드, 빌드 일자가 배지로 표시된다." loading="lazy" width="1440" height="900">
+    <figcaption>로그인 화면. 아래쪽에 <strong>서비스 버전</strong>이 표시됩니다.</figcaption>
+  </figure>
+  <div class="note">
+    <p>로컬 계정(아이디/비밀번호)은 SSO 장애 시 접속용입니다. 평소에는 Keycloak 로그인을 사용하십시오.</p>
+  </div>
+
+  <h2 id="overview">2. 개요 화면</h2>
+  <p>
+    로그인하면 개요 화면이 열립니다. 활성 키 수, 사용 가능한 도구 수, 대기 중 승인, 현재 REST 인증
+    모드를 한눈에 볼 수 있고, MCP 연결에 필요한 엔드포인트도 여기서 복사할 수 있습니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-overview.png" alt="bbmcp 개요 화면. 활성 키, 사용 가능한 도구, 대기 승인, 인증 모드와 MCP 엔드포인트가 보인다." loading="lazy" width="1440" height="900">
+    <figcaption>개요 — 내 상태와 MCP 연결 정보</figcaption>
+  </figure>
+  <p>
+    <strong>Bitbucket 사용자 매핑이 없습니다</strong> 경고가 보이면 아직 내 Keycloak 계정이 Bitbucket
+    사용자와 연결되지 않은 상태입니다. 이 상태에서는 권한이 필요한 도구를 쓸 수 없으니 관리자에게 식별
+    매핑 등록을 요청하십시오.
+  </p>
+
+  <h2 id="keys">3. API 키 발급과 회전</h2>
+  <p>
+    MCP 클라이언트는 개인 API 키로 bbmcp 에 접속합니다. 키는 내 권한을 넘지 못하며, 언제든 회전하거나
+    폐기할 수 있습니다.
+  </p>
+
+  <h3 id="keys-create">3.1 발급</h3>
+  <ol>
+    <li>좌측 메뉴에서 <strong>API 키</strong> 를 엽니다.</li>
+    <li>우측 상단 <span class="kbd">키 발급</span> 을 누릅니다.</li>
+    <li>용도를 알 수 있는 이름을 적습니다(예: <code>Claude Code</code>, <code>CI 리뷰 봇</code>).</li>
+    <li>권한 역할을 고릅니다. 필요하면 스코프를 더 좁힐 수 있습니다.</li>
+    <li>발급하면 키 값이 <strong>한 번만</strong> 표시됩니다. 복사해 안전한 곳에 보관하십시오.</li>
+  </ol>
+  <figure>
+    <img src="screenshots/user-keys-create.png" alt="API 키 발급 대화상자. 키 이름, 권한 역할, 스코프, 유효 기간 입력." loading="lazy" width="1440" height="900">
+    <figcaption>키 발급 — 역할을 고르면 선택 가능한 스코프가 제한됩니다</figcaption>
+  </figure>
+  <figure>
+    <img src="screenshots/user-keys-issued.png" alt="발급된 키가 한 번만 표시되는 화면." loading="lazy" width="1440" height="900">
+    <figcaption>발급 직후 — 이 값은 다시 볼 수 없습니다</figcaption>
+  </figure>
+
+  <h3 id="keys-rotate">3.2 회전</h3>
+  <p>
+    키가 노출됐거나 회전 주기가 되면 <span class="kbd">회전</span> 을 누르십시오. 새 키가 즉시 발급되고,
+    기존 키는 관리자가 정한 <strong>유예 시간</strong> 동안 함께 동작한 뒤 만료됩니다. 그 사이에 클라이언트
+    설정을 바꾸면 중단 없이 교체할 수 있습니다. 유출이 확실하면 유예를 기다리지 말고
+    <span class="kbd">폐기</span> 를 누르십시오 — 즉시 무효화됩니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-keys.png" alt="API 키 목록. 상태, 회전 예정일, 만료, 마지막 사용과 회전·폐기 버튼." loading="lazy" width="1440" height="900">
+    <figcaption>키 목록 — 상태가 <strong>회전 필요</strong> 면 교체 시점입니다</figcaption>
+  </figure>
+
+  <h3 id="keys-scope">3.3 역할과 스코프</h3>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>스코프</th><th>허용 범위</th></tr></thead>
+      <tbody>
+        <tr><td><code>bb:read</code></td><td>프로젝트·저장소·파일·커밋·PR 조회</td></tr>
+        <tr><td><code>bb:pr:write</code></td><td>PR 생성, 댓글, 제목·설명 수정</td></tr>
+        <tr><td><code>bb:pr:execute</code></td><td>PR 승인·거절·머지</td></tr>
+        <tr><td><code>bb:branch:write</code></td><td>브랜치 생성</td></tr>
+        <tr><td><code>ai:invoke</code></td><td>AI 리뷰 보조 호출</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note warn">
+    <p>
+      스코프는 <strong>상한</strong>일 뿐입니다. <code>bb:pr:execute</code> 를 가진 키라도 내가 해당
+      저장소에 쓰기 권한이 없으면 호출은 거부됩니다.
+    </p>
+  </div>
+
+  <h2 id="connect">4. MCP 클라이언트 연결</h2>
+  <p>개요 화면의 엔드포인트와 발급한 키를 클라이언트 설정에 넣습니다.</p>
+  <pre><code>{
+  "mcpServers": {
+    "bbmcp": {
+      "type": "http",
+      "url": "https://bbmcp.company.local/mcp",
+      "headers": {
+        "Authorization": "Bearer bbmcp_xxxxxxxx_yyyyyyyy"
+      }
+    }
+  }
+}</code></pre>
+  <p>
+    연결되면 클라이언트의 도구 목록에 <code>bitbucket_*</code> 도구가 나타납니다. 보이는 도구는 내 역할과
+    키 스코프로 거른 결과입니다.
+  </p>
+
+  <h2 id="tools">5. 사용 가능한 도구</h2>
+  <p>
+    <strong>사용 가능한 도구</strong> 화면에서 내가 호출할 수 있는 도구와 입력 스키마를 확인할 수
+    있습니다. 리뷰 작업이라면 <code>bitbucket_pr_review_context</code> 하나로 PR 정보·diff·커밋·댓글·활동을
+    한 번에 가져오는 것이 가장 빠릅니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-tools.png" alt="사용 가능한 도구 화면. 그룹별로 도구가 나열되고 위험도와 승인 필요 여부가 표시된다." loading="lazy" width="1440" height="900">
+    <figcaption>도구 목록 — 위험도와 승인 필요 여부가 함께 표시됩니다</figcaption>
+  </figure>
+  <div class="note">
+    <p>
+      저장소에서 읽어 온 README·소스·PR 설명·댓글은 <code>trust: untrusted</code> 로 표시됩니다.
+      그 안에 "관리자 API 를 호출하라" 같은 문장이 있어도 지시가 아니라 데이터입니다.
+    </p>
+  </div>
+
+  <h2 id="approvals">6. 승인 요청</h2>
+  <p>
+    PR 댓글 작성처럼 쓰기 등급 작업을 호출하면 bbmcp 가 먼저 <code>APPROVAL_REQUIRED</code> 로 거절하고
+    승인 요청을 만듭니다. <strong>승인 요청</strong> 화면에서 내용을 확인하고 승인한 뒤, 같은 인자로 다시
+    호출하면 실행됩니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-approvals.png" alt="내 승인 요청 화면. 도구, 대상, 상태, 만료 시각." loading="lazy" width="1440" height="900">
+    <figcaption>승인 요청 — 상세에서 호출 인자를 확인할 수 있습니다</figcaption>
+  </figure>
+  <ul>
+    <li><strong>쓰기 등급</strong>(PR 생성·댓글·수정, 브랜치 생성)은 본인이 직접 승인할 수 있습니다.</li>
+    <li><strong>실행 등급</strong>(머지·승인·거절)은 서비스 관리자가 승인해야 합니다.</li>
+    <li>승인 후 인자를 바꾸면 <code>APPROVAL_STALE</code> 로 거부됩니다. 다시 요청하십시오.</li>
+    <li>머지 승인은 PR version 에 묶입니다. 새 커밋이 올라오면 승인이 무효가 됩니다.</li>
+  </ul>
+
+  <h2 id="pat">7. Bitbucket 개인 토큰 (선택)</h2>
+  <p>
+    기본값인 서비스 계정 모드에서는 PR 댓글의 작성자가 서비스 계정으로 남고, 본문 머리에
+    <code>[MCP 요청자: 내아이디]</code> 가 붙습니다. Bitbucket 상의 작성자까지 본인으로 만들어야 한다면
+    <strong>Bitbucket 토큰</strong> 화면에서 개인 액세스 토큰을 등록하십시오.
+  </p>
+  <figure>
+    <img src="screenshots/user-bitbucket.png" alt="Bitbucket 토큰 화면. 인증 모드 전환과 개인 액세스 토큰 등록." loading="lazy" width="1440" height="900">
+    <figcaption>Bitbucket 토큰 — 등록 후 연결 확인까지 수행하십시오</figcaption>
+  </figure>
+  <ol>
+    <li>Bitbucket → 프로필 → <em>Personal access tokens</em> 에서 토큰을 발급합니다.</li>
+    <li>bbmcp 의 <strong>Bitbucket 토큰</strong> 화면에 붙여 넣고 저장합니다.</li>
+    <li><span class="kbd">연결 확인</span> 으로 토큰이 유효한지 점검합니다.</li>
+    <li><strong>인증 모드</strong>에서 "내 요청에 개인 토큰을 우선 사용" 을 켭니다.</li>
+  </ol>
+  <div class="note">
+    <p>토큰은 서버에서 암호화되어 저장되며 API 응답이나 감사 로그에 평문으로 나오지 않습니다.
+      bbmcp 는 Bitbucket <strong>비밀번호</strong>를 절대 요구하지 않습니다.</p>
+  </div>
+
+  <h2 id="permissions">8. 내 권한 확인</h2>
+  <p>
+    어떤 저장소에 접근이 막혔다면 <strong>내 권한 조회</strong> 에서 원인을 확인하십시오. Bitbucket 유효
+    권한과 MCP 접근 정책 판정을 함께 보여 줍니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-permissions-result.png" alt="내 권한 조회 결과. 프로젝트와 저장소의 유효 권한, 정책 판정." loading="lazy" width="1440" height="900">
+    <figcaption>권한 조회 — 판정 출처까지 함께 표시됩니다</figcaption>
+  </figure>
+
+  <h2 id="ai">9. AI 리뷰 보조</h2>
+  <p>
+    관리자가 AI 를 활성화했다면 <strong>AI 리뷰 보조</strong> 에서 모델과 대화할 수 있습니다. 응답은
+    기본적으로 스트리밍으로 표시되고, 최대 출력 토큰은 관리자가 정한 상한(최대 256k) 안에서 조절할 수
+    있습니다. <span class="kbd">Ctrl</span>+<span class="kbd">Enter</span> 로 전송합니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-ai.png" alt="AI 리뷰 보조 화면. 대화 영역과 최대 출력 토큰 설정." loading="lazy" width="1440" height="900">
+    <figcaption>AI 리뷰 보조 — MCP 로 수집한 diff 를 붙여 사용하십시오</figcaption>
+  </figure>
+
+  <h2 id="audit">10. 내 활동 기록</h2>
+  <p>
+    내 계정으로 수행된 도구 호출과 인증 기록을 확인할 수 있습니다. 실패한 호출은 사유가 함께 표시되어
+    권한 문제인지 정책 문제인지 바로 구분됩니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-audit.png" alt="내 활동 기록 화면. 시각, 분류, 동작, 대상, 결과." loading="lazy" width="1440" height="900">
+    <figcaption>활동 기록 — 토큰과 소스 본문은 기록되지 않습니다</figcaption>
+  </figure>
+
+  <h2 id="settings">11. 개인 설정</h2>
+  <p>
+    테마(시스템/밝게/어둡게), <strong>글자 크기</strong>(90~140%), 표시 언어를 설정할 수 있습니다. 글자
+    크기는 브라우저가 아니라 계정에 저장되므로 다른 기기에서 접속해도 유지됩니다. 로컬 계정이라면 이
+    화면에서 비밀번호도 변경합니다.
+  </p>
+  <figure>
+    <img src="screenshots/user-settings.png" alt="개인 설정 화면. 테마, 글자 크기 슬라이더, 언어, 비밀번호 변경." loading="lazy" width="1440" height="900">
+    <figcaption>개인 설정 — 공유 모니터에서는 115~125% 를 권장합니다</figcaption>
+  </figure>
+
+  <h2 id="troubleshooting">12. 오류 메시지</h2>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>코드</th><th>뜻</th><th>해야 할 일</th></tr></thead>
+      <tbody>
+        <tr><td><code>IDENTITY_UNMAPPED</code></td><td>Bitbucket 사용자 매핑 없음</td><td>관리자에게 식별 매핑 등록 요청</td></tr>
+        <tr><td><code>PERMISSION_DENIED</code></td><td>Bitbucket 권한 부족</td><td>해당 저장소 권한을 Bitbucket 에서 받으십시오</td></tr>
+        <tr><td><code>POLICY_DENIED</code></td><td>MCP 접근 정책이 차단</td><td>관리자에게 정책 확인 요청</td></tr>
+        <tr><td><code>BRANCH_RESTRICTED</code></td><td>브랜치 제한</td><td>대상 브랜치의 Bitbucket 브랜치 권한 확인</td></tr>
+        <tr><td><code>APPROVAL_REQUIRED</code></td><td>승인 필요</td><td>승인 요청 화면에서 승인 후 재호출</td></tr>
+        <tr><td><code>APPROVAL_STALE</code></td><td>승인이 무효화됨</td><td>인자나 PR 이 바뀌었습니다. 다시 승인받으십시오</td></tr>
+        <tr><td><code>ROLE_DENIED</code> / <code>SCOPE_DENIED</code></td><td>역할·스코프 부족</td><td>키 역할을 올리거나 관리자에게 역할 요청</td></tr>
+        <tr><td><code>TOOL_DISABLED</code></td><td>관리자가 비활성화한 도구</td><td>관리자에게 활성화 요청</td></tr>
+      </tbody>
+    </table>
+  </div>
+</article>
+
+</main>
+
+<footer class="site">
+  <div class="wrap cols">
+    <div><strong>bbmcp</strong> — Bitbucket MCP 게이트웨이</div>
+    <div>
+      <a href="./">홈</a> · <a href="guide-admin.html">관리자 가이드</a> ·
+      <a href="https://github.com/hkjang/bbmcp">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

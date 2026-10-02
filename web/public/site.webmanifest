@@ -1,0 +1,16 @@
+{
+  "name": "bbmcp — Bitbucket MCP 게이트웨이",
+  "short_name": "bbmcp",
+  "description": "Keycloak SSO 와 Bitbucket 권한 검증을 결합한 Bitbucket MCP 게이트웨이",
+  "lang": "ko",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1f6feb",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go 테스트
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bbmcp
+          POSTGRES_PASSWORD: bbmcp
+          POSTGRES_DB: bbmcp_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bbmcp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - name: 빌드
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: 테스트
+        env:
+          TEST_DATABASE_URL: postgres://bbmcp:bbmcp@localhost:5432/bbmcp_test?sslmode=disable
+        run: go test ./... -count=1 -p 1
+
+  web:
+    name: 웹 콘솔 빌드
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npm run check
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
+  image:
+    name: 도커 이미지 빌드
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 이미지 빌드
+        run: |
+          docker build \
+            --build-arg VERSION="$(cat VERSION)" \
+            --build-arg COMMIT="${GITHUB_SHA::7}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "bbmcp:v$(cat VERSION)" .
+      - name: 기동 점검
+        run: |
+          docker network create bbmcp-ci
+          docker run -d --name pg --network bbmcp-ci \
+            -e POSTGRES_USER=bbmcp -e POSTGRES_PASSWORD=bbmcp -e POSTGRES_DB=bbmcp \
+            postgres:16-alpine
+          sleep 8
+          docker run -d --name bbmcp --network bbmcp-ci -p 8080:8080 \
+            -e DATABASE_URL="postgres://bbmcp:bbmcp@pg:5432/bbmcp?sslmode=disable" \
+            -e BOOTSTRAP_ADMIN=admin \
+            -e BOOTSTRAP_ADMIN_PASSWORD='ci-bootstrap-password' \
+            -e ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+            "bbmcp:v$(cat VERSION)"
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/api/config > /dev/null
+          docker logs bbmcp | tail -20

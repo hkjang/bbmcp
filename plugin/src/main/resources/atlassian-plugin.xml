@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<atlassian-plugin key="${project.groupId}.${project.artifactId}"
+                  name="${project.name}"
+                  plugins-version="2">
+  <plugin-info>
+    <description>${project.description}</description>
+    <version>${project.version}</version>
+    <vendor name="hkjang" url="https://github.com/hkjang/bbmcp" />
+    <param name="plugin-icon">images/pluginIcon.png</param>
+  </plugin-info>
+
+  <!-- REST module: read-only effective permission lookups for bbmcp. -->
+  <rest key="mcp-permission-rest"
+        path="/mcp-permission"
+        version="1.0">
+    <description>bbmcp 유효 권한 조회 API</description>
+  </rest>
+
+  <!-- Only bbmcp may call the REST module; the filter enforces the shared
+       secret and HMAC signature before any request reaches the resource. -->
+  <servlet-filter key="mcp-permission-auth-filter"
+                  class="com.hkjang.bbmcp.permission.GatewayAuthFilter"
+                  location="before-login"
+                  weight="100">
+    <url-pattern>/rest/mcp-permission/*</url-pattern>
+    <init-param>
+      <param-name>secret-property</param-name>
+      <param-value>bbmcp.permission.secret</param-value>
+    </init-param>
+  </servlet-filter>
+</atlassian-plugin>

@@ -1,0 +1,45 @@
+# bbmcp 오프라인 배포용 구성.
+#
+#   docker load -i bbmcp-v0.1.0.tar.gz
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# 환경변수는 네 개만 사용합니다. 나머지 설정(Keycloak, Bitbucket, AI, 정책)은
+# 모두 관리자 콘솔에서 입력하며 AES-256-GCM 으로 암호화되어 저장됩니다.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bbmcp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bbmcp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 설정하십시오}
+      POSTGRES_DB: ${POSTGRES_DB:-bbmcp}
+      TZ: Asia/Seoul
+    volumes:
+      - bbmcp-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bbmcp} -d ${POSTGRES_DB:-bbmcp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  bbmcp:
+    image: bbmcp:v${BBMCP_VERSION:-0.1.0}
+    container_name: bbmcp
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-bbmcp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bbmcp}?sslmode=disable
+      BOOTSTRAP_ADMIN: ${BOOTSTRAP_ADMIN:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?BOOTSTRAP_ADMIN_PASSWORD 를 설정하십시오}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY 를 설정하십시오 (32바이트)}
+      BBMCP_ADDR: ":8080"
+      TZ: Asia/Seoul
+    ports:
+      - "${BBMCP_PORT:-8080}:8080"
+
+volumes:
+  bbmcp-pgdata:

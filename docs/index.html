@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bbmcp — Bitbucket MCP 게이트웨이 | Keycloak SSO · 사용자 권한 검증 · 오프라인 배포</title>
+
+<meta name="description" content="bbmcp 는 Bitbucket Server 6.9.1 용 MCP 게이트웨이입니다. Keycloak SSO 로 사용자를 인증하고, 요청자 본인의 Bitbucket 유효 권한으로만 저장소·PR 에 접근하도록 강제합니다. 환경변수 네 개만으로 오프라인망에 도커 이미지 하나로 배포합니다.">
+<meta name="keywords" content="bbmcp, Bitbucket MCP, Model Context Protocol, Bitbucket Server, Keycloak SSO, 사일런트 SSO, AI 코드리뷰, 오프라인 배포, 권한 검증, MCP 게이트웨이">
+<meta name="author" content="hkjang">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="theme-color" content="#1f6feb">
+<link rel="canonical" href="https://hkjang.github.io/bbmcp/">
+
+<meta property="og:type" content="website">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:site_name" content="bbmcp">
+<meta property="og:title" content="bbmcp — Bitbucket MCP 게이트웨이">
+<meta property="og:description" content="Keycloak SSO 로 인증하고, 요청자 본인의 Bitbucket 권한으로만 접근하는 MCP 게이트웨이. 오프라인망 단일 도커 이미지 배포.">
+<meta property="og:url" content="https://hkjang.github.io/bbmcp/">
+<meta property="og:image" content="https://hkjang.github.io/bbmcp/assets/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="bbmcp — Bitbucket MCP 게이트웨이">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="bbmcp — Bitbucket MCP 게이트웨이">
+<meta name="twitter:description" content="Keycloak SSO · 사용자 권한 검증 · 승인 · 감사. 오프라인망 단일 도커 이미지 배포.">
+<meta name="twitter:image" content="https://hkjang.github.io/bbmcp/assets/social-card.png">
+
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="apple-touch-icon" href="assets/logo-192.png">
+<link rel="stylesheet" href="styles.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "name": "bbmcp",
+      "alternateName": "Bitbucket MCP 게이트웨이",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "AI Gateway",
+      "operatingSystem": "Linux (Docker)",
+      "softwareVersion": "0.1.0",
+      "description": "Bitbucket Server 6.9.1 용 MCP(Model Context Protocol) 게이트웨이. Keycloak SSO 로 사용자를 인증하고, 요청자 본인의 Bitbucket 유효 권한으로만 저장소와 풀 리퀘스트에 접근하도록 강제하며, 쓰기 작업에는 승인을 요구하고 모든 호출을 감사 기록에 남깁니다.",
+      "url": "https://hkjang.github.io/bbmcp/",
+      "downloadUrl": "https://github.com/hkjang/bbmcp/releases",
+      "softwareHelp": "https://hkjang.github.io/bbmcp/guide-admin.html",
+      "license": "https://www.apache.org/licenses/LICENSE-2.0",
+      "inLanguage": "ko",
+      "author": { "@type": "Person", "name": "hkjang", "url": "https://github.com/hkjang" },
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "KRW" },
+      "featureList": [
+        "Keycloak OIDC 로그인 및 사일런트 SSO",
+        "Keycloak sub ↔ Bitbucket user.id 영구 식별 매핑",
+        "요청자 본인의 Bitbucket 유효 권한 검증",
+        "프로젝트·저장소·브랜치 접근 정책",
+        "인자에 묶인 서버측 승인과 PR version 재검증",
+        "개인 API 키 발급·회전과 변경 가능한 키 권한 체계",
+        "MCP Streamable HTTP 엔드포인트",
+        "AI 스트리밍 호출 (최대 256k 토큰)",
+        "감사 로그와 Prometheus 메트릭",
+        "환경변수 4개로 끝나는 오프라인 도커 배포"
+      ]
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "bbmcp 는 무엇입니까?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "bbmcp 는 Bitbucket Server 6.9.1 앞에 두는 MCP 게이트웨이입니다. AI 에이전트가 MCP 로 저장소·커밋·풀 리퀘스트를 읽고 쓸 때, Keycloak 으로 인증된 요청자 본인의 Bitbucket 유효 권한을 먼저 확인한 뒤에만 호출을 수행합니다."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "서비스 계정 권한이 사용자에게 그대로 노출되지 않습니까?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "노출되지 않습니다. 서비스 계정 PAT 은 REST 호출 수단일 뿐이며, 모든 도구 호출 전에 요청자 본인의 프로젝트·저장소 유효 권한을 따로 판정합니다. 목록 조회 결과도 요청자가 읽을 수 있는 항목만 남기고 걸러서 반환합니다."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "사용자의 Bitbucket 비밀번호가 필요합니까?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "필요하지 않습니다. bbmcp 는 사용자의 Bitbucket 비밀번호를 수집하지 않습니다. 기본값은 중앙 서비스 계정 모드이며, Bitbucket 작성자를 본인 이름으로 남겨야 하는 경우에만 사용자가 자신의 개인 액세스 토큰을 선택적으로 등록할 수 있습니다."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "오프라인망(폐쇄망)에서 운영할 수 있습니까?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "가능합니다. 릴리스에서 내려받은 bbmcp-v<버전>.tar.gz 를 docker load 로 적재하고, PostgreSQL DSN·부트스트랩 관리자 계정·비밀번호·암호화 키 네 개의 환경변수만 지정하면 기동합니다. Keycloak, Bitbucket, AI, 정책 등 나머지 설정은 모두 관리자 콘솔에서 입력합니다."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "머지 같은 위험한 작업은 어떻게 통제합니까?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "머지·승인·거절은 실행 등급으로 분류되어 기본 비활성 상태이며, 활성화하더라도 승인 없이 실행할 수 없습니다. 승인은 호출 인자 해시와 풀 리퀘스트 version 에 묶이므로, 승인 이후 인자가 바뀌거나 새 커밋이 올라오면 자동으로 무효화됩니다."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "프롬프트 인젝션은 어떻게 방어합니까?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "저장소에서 읽은 README·소스·커밋 메시지·PR 설명·댓글은 모두 신뢰할 수 없는 데이터로 표시해 반환합니다. 응답에는 출처와 trust 필드가 붙으며, MCP 초기화 지시문에서 그 내용을 도구 실행 지시로 취급하지 말 것을 명시합니다. 권한·정책·승인 판정은 모델이 아니라 서버가 수행합니다."
+          }
+        }
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "name": "bbmcp 오프라인 설치",
+      "inLanguage": "ko",
+      "totalTime": "PT10M",
+      "step": [
+        { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.1.0.tar.gz 로 릴리스 이미지를 적재합니다." },
+        { "@type": "HowToStep", "position": 2, "name": "환경변수 준비", "text": "DATABASE_URL, BOOTSTRAP_ADMIN, BOOTSTRAP_ADMIN_PASSWORD, ENCRYPTION_KEY 네 개를 설정합니다." },
+        { "@type": "HowToStep", "position": 3, "name": "기동", "text": "docker compose -f deploy/docker-compose.yml up -d 로 PostgreSQL 과 함께 기동합니다." },
+        { "@type": "HowToStep", "position": 4, "name": "관리자 설정", "text": "관리자 콘솔에서 Keycloak, Bitbucket 서비스 계정, 접근 정책, 도구 활성화를 설정합니다." }
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "name": "bbmcp 문서",
+      "url": "https://hkjang.github.io/bbmcp/",
+      "inLanguage": "ko"
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+
+<header class="site">
+  <div class="wrap nav">
+    <a class="brand" href="./">
+      <img src="assets/logo-192.png" alt="bbmcp 로고" width="32" height="32">
+      bbmcp
+    </a>
+    <nav aria-label="주요">
+      <a href="#why">왜 필요한가</a>
+      <a href="#how">동작 방식</a>
+      <a href="#features">기능</a>
+      <a href="#screens">화면</a>
+      <a href="#install">설치</a>
+      <a href="#faq">FAQ</a>
+      <a href="guide-user.html">사용자 가이드</a>
+      <a href="guide-admin.html">관리자 가이드</a>
+      <a href="https://github.com/hkjang/bbmcp">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero">
+  <div class="wrap">
+    <div class="badges">
+      <span class="badge">Bitbucket Server 6.9.1</span>
+      <span class="badge">Keycloak OIDC · 사일런트 SSO</span>
+      <span class="badge">MCP Streamable HTTP</span>
+      <span class="badge">오프라인망 단일 이미지</span>
+    </div>
+    <h1>AI 가 Bitbucket 을 보더라도,<br>사용자가 볼 수 있는 것만 봅니다.</h1>
+    <p class="lead">
+      bbmcp 는 Bitbucket Server 앞에 두는 MCP 게이트웨이입니다. Keycloak 으로 사용자를 인증하고,
+      <strong>요청자 본인의 Bitbucket 유효 권한</strong>을 매 호출마다 확인한 뒤에만 저장소와 풀 리퀘스트에
+      접근합니다. 서비스 계정의 넓은 권한은 데이터를 가져오는 수단일 뿐, 사용자의 권한으로 간주하지 않습니다.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#install">오프라인 설치 보기</a>
+      <a class="btn btn-ghost" href="https://github.com/hkjang/bbmcp/releases">릴리스 내려받기</a>
+      <a class="btn btn-ghost" href="guide-admin.html">관리자 가이드</a>
+    </div>
+  </div>
+</section>
+
+<section id="why" class="alt">
+  <div class="wrap">
+    <h2>왜 게이트웨이가 필요한가</h2>
+    <p class="section-lead">
+      Bitbucket Server 6.9.1 에는 GitLab 의 <code>sudo</code> 같은 범용 impersonation 이 없고, 관리자가
+      사용자를 대신해 개인 액세스 토큰을 만들어 줄 수도 없습니다. 그래서 흔히 쓰는 방법이
+      <em>관리자 PAT 하나로 모든 REST 호출</em>인데, 이 방식은 AI 에게 사용자가 볼 수 없는 저장소까지
+      보여 줍니다.
+    </p>
+    <div class="grid">
+      <article class="card">
+        <h3>관리자 PAT 단일 방식의 문제</h3>
+        <p>
+          서비스 계정이 <code>SYS_ADMIN</code> 이면 AI 는 모든 프로젝트를 봅니다. 사용자는 A·B·C 만 접근
+          가능한데 결과에는 D·E·F 가 섞여 나옵니다. 정보 유출입니다.
+        </p>
+      </article>
+      <article class="card">
+        <h3>bbmcp 의 처리</h3>
+        <p>
+          모든 도구 호출 전에 요청자 본인의 유효 권한을 판정하고, 목록 결과도 요청자 기준으로 걸러서
+          돌려줍니다. 서비스 계정은 전송 수단일 뿐입니다.
+        </p>
+      </article>
+      <article class="card">
+        <h3>식별은 ID 로 고정</h3>
+        <p>
+          최초 1회만 <code>preferred_username</code> 으로 Bitbucket 사용자를 정확히 일치 검색하고, 이후에는
+          <code>Keycloak sub ↔ Bitbucket user.id</code> 를 영구 기준으로 사용합니다. 검색 결과의 첫 번째
+          사용자를 집는 일은 없습니다.
+        </p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>동작 방식</h2>
+    <p class="section-lead">
+      요청 하나가 통과해야 하는 관문입니다. 하나라도 막히면 Bitbucket 에 아무 요청도 나가지 않습니다.
+    </p>
+    <div class="steps">
+      <div class="step">
+        <h3>Keycloak 토큰 검증</h3>
+        <p>MCP 클라이언트의 OAuth 액세스 토큰 또는 개인 API 키를 검증하고 역할을 읽습니다.</p>
+      </div>
+      <div class="step">
+        <h3>식별 매핑</h3>
+        <p>Keycloak 주체를 Bitbucket 사용자 ID 에 연결합니다. 매핑이 없으면 권한이 필요한 도구는 거부됩니다.</p>
+      </div>
+      <div class="step">
+        <h3>MCP 접근 정책</h3>
+        <p>관리자가 정한 프로젝트·저장소·브랜치 허용/차단과 위험도 상한을 평가합니다.</p>
+      </div>
+      <div class="step">
+        <h3>유효 권한 판정</h3>
+        <p>Bitbucket 권한 플러그인(권장) 또는 REST 폴백으로 요청자의 실제 READ/WRITE/ADMIN 을 확인합니다.</p>
+      </div>
+      <div class="step">
+        <h3>브랜치 제한 확인</h3>
+        <p>머지 대상 브랜치의 read-only 제한과 예외 사용자·그룹을 확인합니다.</p>
+      </div>
+      <div class="step">
+        <h3>승인 검증</h3>
+        <p>쓰기·실행 등급은 인자 해시와 PR version 에 묶인 승인을 요구합니다. 바뀌면 즉시 무효입니다.</p>
+      </div>
+      <div class="step">
+        <h3>REST 호출 및 감사</h3>
+        <p>서비스 계정 PAT 으로 호출하고, 요청자·대리 계정·도구·대상·결과를 모두 감사 로그에 남깁니다.</p>
+      </div>
+    </div>
+
+    <h3>최종 권한 공식</h3>
+    <pre><code>유효 권한 = Bitbucket 사용자 권한
+          ∩ MCP 접근 정책(프로젝트/저장소/브랜치)
+          ∩ 도구 역할·스코프
+          ∩ 승인(쓰기·실행 등급)</code></pre>
+  </div>
+</section>
+
+<section id="features" class="alt">
+  <div class="wrap">
+    <h2>기능</h2>
+    <p class="section-lead">운영에 필요한 것을 기본으로 갖춘 상태로 배포됩니다.</p>
+    <div class="grid">
+      <article class="card">
+        <h3>Keycloak SSO · 사일런트 SSO</h3>
+        <p>Client ID 와 Secret 만 넣으면 디스커버리로 자동 구성됩니다. 로그인 화면에서 숨은 프레임으로
+          <code>prompt=none</code> 을 시도해, 기존 SSO 세션이 있으면 클릭 없이 들어갑니다.</p>
+      </article>
+      <article class="card">
+        <h3>MCP 도구 33종</h3>
+        <p>조회·작성·실행 3단계로 나뉘며 고수준 컨텍스트 도구를 포함합니다.
+          <code>bitbucket_pr_review_context</code> 하나로 PR·diff·커밋·댓글·활동을 한 번에 수집합니다.</p>
+      </article>
+      <article class="card">
+        <h3>개인 키 관리와 회전</h3>
+        <p>사용자별 API 키 발급·회전·폐기를 제공합니다. 회전 시 유예 시간 동안 기존 키가 함께 동작해
+          무중단 교체가 가능합니다.</p>
+      </article>
+      <article class="card">
+        <h3>변경 가능한 키 권한 체계</h3>
+        <p>역할(스코프 묶음)을 관리자가 자유롭게 정의하고 수정합니다. 역할의 스코프를 줄이면 이미
+          발급된 키에도 즉시 반영됩니다.</p>
+      </article>
+      <article class="card">
+        <h3>승인 엔진</h3>
+        <p>승인은 호출 인자 해시와 PR version 에 묶입니다. 승인 뒤 인자가 바뀌거나 새 커밋이 올라오면
+          <code>APPROVAL_STALE</code> 로 거부합니다.</p>
+      </article>
+      <article class="card">
+        <h3>프롬프트 인젝션 방어</h3>
+        <p>저장소에서 읽은 모든 내용에 출처와 <code>trust: untrusted</code> 를 붙여 반환하고, 모델에게
+          그 내용을 지시로 취급하지 말 것을 명시합니다.</p>
+      </article>
+      <article class="card">
+        <h3>AI 스트리밍 (최대 256k)</h3>
+        <p>Anthropic Messages 와 OpenAI 호환 두 형식을 지원하며 항상 스트리밍으로 중계합니다.
+          최대 출력 토큰은 256k 까지 설정할 수 있습니다.</p>
+      </article>
+      <article class="card">
+        <h3>감사와 관측</h3>
+        <p>요청자·Bitbucket 사용자·서비스 계정·도구·대상·승인·결과·지연을 기록합니다. 토큰과 소스·diff
+          본문은 기록하지 않습니다. <code>/metrics</code> 로 Prometheus 지표를 제공합니다.</p>
+      </article>
+      <article class="card">
+        <h3>관리자 · 개인 화면 분리</h3>
+        <p>서비스 설정은 관리자 콘솔에서, 키·토큰·승인·활동 기록은 개인 화면에서 관리합니다.
+          모든 화면은 한국어가 기본입니다.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="screens">
+  <div class="wrap">
+    <h2>화면</h2>
+    <p class="section-lead">가독성을 위해 본문 기본 글자 크기를 16px 이상으로 잡았고, 사용자가 90~140% 범위에서 조정할 수 있습니다.</p>
+
+    <div class="shots">
+      <figure>
+        <img src="screenshots/admin-dashboard.png" alt="bbmcp 관리 대시보드: 구성 요소 상태, 주요 수치, 최근 활동" loading="lazy" width="1440" height="900">
+        <figcaption>관리 대시보드 — 구성 요소 상태와 최근 활동</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/admin-tools.png" alt="MCP 도구 관리 화면: 도구별 활성화, 승인 필요, 최소 역할 설정" loading="lazy" width="1440" height="900">
+        <figcaption>MCP 도구 — 활성화·승인·최소 역할</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/admin-policy.png" alt="접근 정책 화면: 프로젝트·저장소·브랜치 허용 및 차단 규칙" loading="lazy" width="1440" height="900">
+        <figcaption>접근 정책 — 허용·차단과 위험도 상한</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/admin-identity.png" alt="식별 매핑 화면: Keycloak 주체와 Bitbucket 사용자 ID 연결 목록" loading="lazy" width="1440" height="900">
+        <figcaption>식별 매핑 — Keycloak sub ↔ Bitbucket user.id</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/user-keys.png" alt="개인 API 키 화면: 키 발급, 회전, 폐기" loading="lazy" width="1440" height="900">
+        <figcaption>개인 API 키 — 발급·회전·폐기</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/user-tools.png" alt="사용 가능한 도구 화면: 역할과 스코프에 따라 호출 가능한 MCP 도구 목록" loading="lazy" width="1440" height="900">
+        <figcaption>사용 가능한 도구 — 내 역할·스코프 기준</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/admin-audit.png" alt="감사 로그 화면: 요청자, Bitbucket 사용자, 도구, 대상, 결과" loading="lazy" width="1440" height="900">
+        <figcaption>감사 로그 — 요청자와 대리 계정을 함께 기록</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/login.png" alt="bbmcp 로그인 화면: 서비스 버전이 함께 표시됨" loading="lazy" width="1440" height="900">
+        <figcaption>로그인 — 버전 정보를 함께 표시</figcaption>
+      </figure>
+    </div>
+
+    <h3>모바일</h3>
+    <div class="shots">
+      <figure>
+        <img src="screenshots/mobile-login.png" alt="모바일 로그인 화면" loading="lazy" width="390" height="844">
+        <figcaption>모바일 로그인</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/mobile-overview.png" alt="모바일 개요 화면" loading="lazy" width="390" height="844">
+        <figcaption>모바일 개요</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/mobile-nav.png" alt="모바일 메뉴" loading="lazy" width="390" height="844">
+        <figcaption>모바일 메뉴</figcaption>
+      </figure>
+    </div>
+
+    <p><a href="guide-user.html">사용자 가이드에서 전체 화면 보기 →</a></p>
+  </div>
+</section>
+
+<section id="install" class="alt">
+  <div class="wrap">
+    <h2>오프라인망 설치</h2>
+    <p class="section-lead">
+      환경변수는 네 개뿐입니다. Keycloak·Bitbucket·AI·정책을 포함한 나머지 설정은 모두 관리자 콘솔에서
+      입력하며, 비밀값은 AES-256-GCM 으로 암호화되어 PostgreSQL 에 저장됩니다.
+    </p>
+
+    <h3>1. 이미지 적재</h3>
+    <pre><code>docker load -i bbmcp-v0.1.0.tar.gz
+docker images | grep bbmcp
+# bbmcp   v0.1.0   ...</code></pre>
+
+    <h3>2. 환경변수</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>변수</th><th>설명</th><th>예시</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>DATABASE_URL</code></td><td>PostgreSQL DSN</td><td><code>postgres://bbmcp:…@postgres:5432/bbmcp?sslmode=disable</code></td></tr>
+          <tr><td><code>BOOTSTRAP_ADMIN</code></td><td>최초 관리자 아이디</td><td><code>admin</code></td></tr>
+          <tr><td><code>BOOTSTRAP_ADMIN_PASSWORD</code></td><td>최초 관리자 비밀번호</td><td>충분히 긴 임의 문자열</td></tr>
+          <tr><td><code>ENCRYPTION_KEY</code></td><td>비밀값 암호화 키(32바이트)</td><td><code>openssl rand -base64 32</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>3. 기동</h3>
+    <pre><code>cp deploy/.env.example deploy/.env
+$EDITOR deploy/.env
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+curl -fsS http://localhost:8080/healthz</code></pre>
+
+    <div class="note">
+      <p><strong>백업은 두 가지를 함께 보관하십시오.</strong> PostgreSQL 덤프와 <code>ENCRYPTION_KEY</code>.
+        키를 분실하면 저장된 Client Secret·서비스 PAT·사용자 PAT 을 복호화할 수 없습니다.</p>
+    </div>
+
+    <h3>4. MCP 클라이언트 연결</h3>
+    <pre><code>{
+  "mcpServers": {
+    "bbmcp": {
+      "type": "http",
+      "url": "https://bbmcp.company.local/mcp",
+      "headers": { "Authorization": "Bearer bbmcp_xxx_yyy" }
+    }
+  }
+}</code></pre>
+    <p>
+      Keycloak OAuth 를 쓰는 클라이언트는 <code>/.well-known/oauth-protected-resource</code> 메타데이터로
+      인가 서버를 자동 발견합니다.
+    </p>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>자주 묻는 질문</h2>
+
+    <details open>
+      <summary>bbmcp 는 무엇입니까?</summary>
+      <p>
+        Bitbucket Server 6.9.1 앞에 두는 MCP 게이트웨이입니다. AI 에이전트가 MCP 로 저장소·커밋·풀
+        리퀘스트를 읽고 쓸 때, Keycloak 으로 인증된 요청자 본인의 Bitbucket 유효 권한을 먼저 확인한
+        뒤에만 호출을 수행합니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>서비스 계정 권한이 사용자에게 그대로 노출되지 않습니까?</summary>
+      <p>
+        노출되지 않습니다. 서비스 계정 PAT 은 REST 호출 수단일 뿐이며, 모든 도구 호출 전에 요청자 본인의
+        프로젝트·저장소 유효 권한을 따로 판정합니다. 목록 조회 결과도 요청자가 읽을 수 있는 항목만 남기고
+        걸러서 반환합니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>사용자의 Bitbucket 비밀번호가 필요합니까?</summary>
+      <p>
+        필요하지 않습니다. 기본값은 중앙 서비스 계정 모드입니다. Bitbucket 에 남는 작성자를 본인 이름으로
+        만들어야 하는 경우에만, 사용자가 자신의 개인 액세스 토큰을 선택적으로 등록할 수 있습니다. 등록된
+        토큰은 AES-256-GCM 으로 암호화되어 저장됩니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>Bitbucket 에 플러그인을 꼭 설치해야 합니까?</summary>
+      <p>
+        필수는 아닙니다. 플러그인이 없으면 REST 폴백 모드로 전역·프로젝트·저장소·그룹 권한을 조합해
+        판정합니다. 다만 상속과 공개 저장소까지 Bitbucket 과 100% 동일하게 맞추려면 동봉된 권한
+        플러그인(<code>plugin/</code>) 설치를 권장합니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>머지 같은 위험한 작업은 어떻게 통제합니까?</summary>
+      <p>
+        머지·승인·거절은 실행 등급으로 분류되어 기본 비활성 상태이며, 활성화하더라도 승인 없이 실행할 수
+        없습니다. 승인은 호출 인자 해시와 PR version 에 묶이므로, 승인 이후 인자가 바뀌거나 새 커밋이
+        올라오면 자동으로 무효화됩니다. 브랜치 제한도 별도로 확인합니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>프롬프트 인젝션은 어떻게 방어합니까?</summary>
+      <p>
+        저장소에서 읽은 README·소스·커밋 메시지·PR 설명·댓글은 모두 신뢰할 수 없는 데이터로 표시해
+        반환합니다. 권한·정책·승인 판정은 모델이 아니라 서버가 수행하므로, 저장소 안의 지시문이 도구
+        실행으로 이어지지 않습니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>Bitbucket 을 업그레이드하면 어떻게 됩니까?</summary>
+      <p>
+        Bitbucket 접근은 <code>BitbucketAdapter</code> 인터페이스 뒤에 분리되어 있습니다. 업그레이드 시
+        어댑터와 권한 플러그인만 교체하면 되고, MCP 도구·Keycloak 연동·관리 콘솔은 그대로 유지됩니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>어떤 도구가 기본으로 켜져 있습니까?</summary>
+      <p>
+        조회 등급(1차)과 고수준 컨텍스트 도구는 기본 활성, 쓰기 등급(2차)은 활성이지만 승인 필요,
+        실행 등급(3차: 머지·승인·거절)은 기본 비활성입니다. 관리자가 도구별로 조정할 수 있습니다.
+      </p>
+    </details>
+  </div>
+</section>
+
+</main>
+
+<footer class="site">
+  <div class="wrap cols">
+    <div>
+      <strong>bbmcp</strong> — Bitbucket MCP 게이트웨이<br>
+      Go + React · Apache-2.0
+    </div>
+    <div>
+      <a href="guide-user.html">사용자 가이드</a> ·
+      <a href="guide-admin.html">관리자 가이드</a> ·
+      <a href="https://github.com/hkjang/bbmcp">GitHub</a> ·
+      <a href="https://github.com/hkjang/bbmcp/releases">릴리스</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
