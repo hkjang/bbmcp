@@ -77,6 +77,7 @@
     <li class="sub"><a href="#keycloak-roles">3.2 역할</a></li>
     <li class="sub"><a href="#silent-sso">3.3 사일런트 SSO</a></li>
     <li class="sub"><a href="#mcp-oauth">3.4 MCP OAuth</a></li>
+    <li class="sub"><a href="#invalid-uri">3.5 Invalid redirect URI 해결</a></li>
     <li><a href="#bitbucket">4. Bitbucket 연결</a></li>
     <li class="sub"><a href="#service-account">4.1 서비스 계정</a></li>
     <li class="sub"><a href="#auth-mode">4.2 인증 모드</a></li>
@@ -127,7 +128,7 @@
 
   <h3 id="compose">1.2 compose 기동</h3>
   <pre><code># 1) 릴리스 이미지 적재 (오프라인망에서는 반입한 파일 사용)
-docker load -i bbmcp-v0.2.0.tar.gz
+docker load -i bbmcp-v0.2.1.tar.gz
 
 # 2) 환경변수 준비
 cp deploy/.env.example deploy/.env
@@ -296,6 +297,60 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
     "bbmcp": { "type": "http", "url": "https://bbmcp.company.local/mcp" }
   }
 }</code></pre>
+
+  <h3 id="invalid-uri">3.5 Invalid redirect URI 해결</h3>
+  <p>
+    Keycloak 은 리다이렉트 URI 를 <strong>문자열 그대로</strong> 비교합니다. 한 글자라도 다르면
+    <code>Invalid parameter: redirect_uri</code> 로 거부합니다. bbmcp 는 보내는 값을 항상 정규화하고,
+    <span class="kbd">연결 점검</span> 결과에 <strong>그대로 등록할 문자열</strong>을 복사 버튼과 함께
+    보여 줍니다. 그 값을 Keycloak 에 붙여 넣으십시오.
+  </p>
+  <figure>
+    <img src="screenshots/admin-auth-register-uris.png" alt="연결 점검 결과에 Keycloak 에 등록할 Valid redirect URIs, Web origins, Valid post logout redirect URIs 가 복사 버튼과 함께 표시된 화면." loading="lazy" width="1440" height="900">
+    <figcaption>연결 점검 — 이 문자열을 그대로 Keycloak 에 등록합니다</figcaption>
+  </figure>
+
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>증상</th><th>원인</th><th>조치</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>로그인 시 <code>Invalid parameter: redirect_uri</code></td>
+          <td>등록값과 bbmcp 가 보내는 값이 다름. 흔한 차이: 후행 슬래시, 대소문자, <code>:443</code>·<code>:80</code> 명시, http/https</td>
+          <td>연결 점검의 <strong>Valid redirect URIs</strong> 값을 복사해 Keycloak 에 등록</td>
+        </tr>
+        <tr>
+          <td>리버스 프록시 뒤에서만 실패</td>
+          <td>프록시가 알려 주는 호스트와 실제 공개 주소가 달라 유도값이 어긋남</td>
+          <td><strong>Redirect URI</strong> 에 공개 주소를 명시하고, 보안 설정의 <strong>프록시 헤더 신뢰</strong>를 켜십시오</td>
+        </tr>
+        <tr>
+          <td>로그아웃 시 <code>Invalid parameter</code></td>
+          <td>등록되지 않은 <code>post_logout_redirect_uri</code> 전송</td>
+          <td>bbmcp 는 설정했을 때만 보냅니다. 값을 넣었다면 Keycloak 의 <em>Valid post logout redirect URIs</em> 에도 등록하십시오</td>
+        </tr>
+        <tr>
+          <td>MCP 클라이언트 로그인 창에서 실패</td>
+          <td>공개 클라이언트에 루프백 와일드카드 포트가 없음</td>
+          <td><code>http://127.0.0.1:*</code> 와 <code>http://localhost:*</code> 를 등록하십시오</td>
+        </tr>
+        <tr>
+          <td>저장 시 <code>INVALID_URL</code></td>
+          <td>스킴 누락, 질의 문자열·공백 포함 등</td>
+          <td>메시지가 가리키는 항목을 고치십시오. 잘못된 값은 저장되지 않습니다</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <p>
+      bbmcp 는 저장할 때 URL 의 공백·후행 슬래시·대소문자·기본 포트를 정리합니다. 따라서
+      <code>https://BBMCP.local:443/</code> 를 입력해도 실제로는 <code>https://bbmcp.local</code> 로
+      저장되고 전송됩니다. 질의 문자열이나 프래그먼트처럼 <em>의도를 바꿀 수 있는</em> 입력은 조용히
+      지우지 않고 저장을 거부합니다.
+    </p>
+  </div>
 
   <h2 id="bitbucket">4. Bitbucket 연결</h2>
 
@@ -563,7 +618,7 @@ pg_dump "$DATABASE_URL" --format=custom --file=bbmcp-$(date +%Y%m%d).dump
 # + ENCRYPTION_KEY
 
 # 업그레이드
-docker load -i bbmcp-v0.2.0.tar.gz
+docker load -i bbmcp-v0.2.1.tar.gz
 # deploy/.env 의 BBMCP_VERSION 을 올린 뒤
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 # 마이그레이션은 기동 시 자동 적용됩니다</code></pre>

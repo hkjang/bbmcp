@@ -43,7 +43,7 @@
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "AI Gateway",
       "operatingSystem": "Linux (Docker)",
-      "softwareVersion": "0.2.0",
+      "softwareVersion": "0.2.1",
       "description": "Bitbucket Server 6.9.1 용 MCP(Model Context Protocol) 게이트웨이. Keycloak SSO 로 사용자를 인증하고, 요청자 본인의 Bitbucket 유효 권한으로만 저장소와 풀 리퀘스트에 접근하도록 강제하며, 쓰기 작업에는 승인을 요구하고 모든 호출을 감사 기록에 남깁니다.",
       "url": "https://hkjang.github.io/bbmcp/",
       "downloadUrl": "https://github.com/hkjang/bbmcp/releases",
@@ -124,7 +124,7 @@
       "inLanguage": "ko",
       "totalTime": "PT10M",
       "step": [
-        { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.2.0.tar.gz 로 릴리스 이미지를 적재합니다." },
+        { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.2.1.tar.gz 로 릴리스 이미지를 적재합니다." },
         { "@type": "HowToStep", "position": 2, "name": "환경변수 준비", "text": "DATABASE_URL, BOOTSTRAP_ADMIN, BOOTSTRAP_ADMIN_PASSWORD, ENCRYPTION_KEY 네 개를 설정합니다." },
         { "@type": "HowToStep", "position": 3, "name": "기동", "text": "docker compose -f deploy/docker-compose.yml up -d 로 PostgreSQL 과 함께 기동합니다." },
         { "@type": "HowToStep", "position": 4, "name": "관리자 설정", "text": "관리자 콘솔에서 Keycloak, Bitbucket 서비스 계정, 접근 정책, 도구 활성화를 설정합니다." }
@@ -400,9 +400,9 @@
     </p>
 
     <h3>1. 이미지 적재</h3>
-    <pre><code>docker load -i bbmcp-v0.2.0.tar.gz
+    <pre><code>docker load -i bbmcp-v0.2.1.tar.gz
 docker images | grep bbmcp
-# bbmcp   v0.2.0   ...</code></pre>
+# bbmcp   v0.2.1   ...</code></pre>
 
     <h3>2. 환경변수</h3>
     <div class="table-scroll">
@@ -485,6 +485,17 @@ curl -fsS http://localhost:8080/healthz</code></pre>
         보호 리소스 메타데이터 주소를 알려 주고, 클라이언트는 그 정보로 Keycloak 을 찾아 PKCE 로그인을
         수행합니다. Keycloak 의 동적 등록이 막혀 있으면 bbmcp 가 사전 등록된 공개 클라이언트 ID 를
         대신 내려 줍니다. OAuth 를 지원하지 않는 클라이언트는 개인 API 키를 사용합니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>Keycloak 이 Invalid redirect URI 오류를 냅니다.</summary>
+      <p>
+        Keycloak 은 리다이렉트 URI 를 문자열 그대로 비교하므로 후행 슬래시, 대소문자,
+        <code>:443</code> 명시 같은 사소한 차이도 거부 사유가 됩니다. bbmcp 는 보내는 값을 항상
+        정규화해 저장하고, 관리 콘솔의 연결 점검 화면에서 <strong>Keycloak 에 그대로 등록할 문자열</strong>을
+        복사 버튼과 함께 보여 줍니다. 로그아웃용 <code>post_logout_redirect_uri</code> 는 관리자가
+        명시적으로 설정했을 때만 전송하므로, 등록하지 않아 발생하던 오류도 나지 않습니다.
       </p>
     </details>
 

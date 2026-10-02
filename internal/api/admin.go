@@ -130,6 +130,14 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, out)
 }
 
+// postLogoutRegistrations lists what Keycloak needs for logout to return here.
+func postLogoutRegistrations(configured string) []string {
+	if strings.TrimSpace(configured) == "" {
+		return []string{}
+	}
+	return []string{configured}
+}
+
 // healthSnapshot checks every dependency the readiness probe cares about.
 func (s *Server) healthSnapshot(ctx context.Context) map[string]any {
 	out := map[string]any{}
@@ -419,6 +427,42 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if next.UsernameClaim == "" {
 			next.UsernameClaim = "preferred_username"
 		}
+		// Validate what the operator typed, then store the normalised form so
+		// the string bbmcp sends matches what they registered in Keycloak.
+		next.ClientID = strings.TrimSpace(next.ClientID)
+		next.MCPClientID = strings.TrimSpace(next.MCPClientID)
+		for _, field := range []struct {
+			label  string
+			target *string
+			path   bool
+		}{
+			{"Issuer URL", &next.Issuer, false},
+			{"Redirect URI", &next.RedirectURL, true},
+			{"로그아웃 후 이동 URL", &next.PostLogoutURL, true},
+		} {
+			var cleaned string
+			var verr error
+			if field.path {
+				cleaned, verr = httpx.CleanRedirectURI(field.label, *field.target, false)
+			} else {
+				cleaned, verr = httpx.CleanBaseURL(field.label, *field.target, false)
+			}
+			if verr != nil {
+				httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL", verr.Error())
+				return
+			}
+			*field.target = cleaned
+		}
+		if next.Enabled && next.Issuer == "" {
+			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL",
+				"Keycloak SSO 를 켜려면 Issuer URL 이 필요합니다")
+			return
+		}
+		if next.RedirectURL != "" && !strings.HasSuffix(next.RedirectURL, CallbackPath) {
+			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL",
+				"Redirect URI 는 "+CallbackPath+" 로 끝나야 합니다. 이 경로에서만 콜백을 받습니다.")
+			return
+		}
 		err = s.Store.Put(ctx, group, next, actor)
 		s.Auth.OIDC.Reset()
 
@@ -442,6 +486,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if next.RestPrefix == "" {
 			next.RestPrefix = "/rest/api/1.0"
+		}
+		if cleaned, verr := httpx.CleanBaseURL("Bitbucket 기본 URL", next.BaseURL, false); verr != nil {
+			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL", verr.Error())
+			return
+		} else {
+			next.BaseURL = cleaned
 		}
 		if next.DefaultAuthMode != "user" {
 			next.DefaultAuthMode = "service"
@@ -471,6 +521,17 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if next.Mode != "plugin" {
 			next.Mode = "rest"
 		}
+		if cleaned, verr := httpx.CleanBaseURL("권한 플러그인 URL", next.PluginBaseURL, false); verr != nil {
+			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL", verr.Error())
+			return
+		} else {
+			next.PluginBaseURL = cleaned
+		}
+		if next.Mode == "plugin" && next.PluginBaseURL == "" {
+			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL",
+				"플러그인 모드에서는 플러그인 기본 URL 이 필요합니다")
+			return
+		}
 		err = s.Store.Put(ctx, group, next, actor)
 		s.Resolver.Reset()
 
@@ -491,6 +552,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 				httpx.Fail(w, http.StatusInternalServerError, err.Error())
 				return
 			}
+		}
+		if cleaned, verr := httpx.CleanBaseURL("AI 기본 URL", next.BaseURL, false); verr != nil {
+			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL", verr.Error())
+			return
+		} else {
+			next.BaseURL = cleaned
 		}
 		if next.MaxTokens > settings.MaxTokenCeiling {
 			next.MaxTokens = settings.MaxTokenCeiling
@@ -548,6 +615,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if e := remarshal(body.Value, &next); e != nil {
 			httpx.Fail(w, http.StatusBadRequest, e.Error())
 			return
+		}
+		if cleaned, verr := httpx.CleanBaseURL("리소스 URL", next.ResourceURL, false); verr != nil {
+			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL", verr.Error())
+			return
+		} else {
+			next.ResourceURL = cleaned
 		}
 		err = s.Store.Put(ctx, group, next, actor)
 
@@ -612,18 +685,47 @@ func (s *Server) testTarget(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.Auth.OIDC.Reset()
-		cfg, _, err := s.Auth.OIDC.OAuth2Config(ctx, s.redirectURI(r, kc.RedirectURL))
+		redirect := s.redirectURI(r, kc.RedirectURL)
+		derived := s.baseURL(r) + CallbackPath
+
+		// Whatever bbmcp will actually send is reported verbatim, so the
+		// operator can paste it into Keycloak instead of guessing.
+		out := map[string]any{
+			"redirectUri":        redirect,
+			"derivedRedirectUri": derived,
+			"postLogoutUri":      kc.PostLogoutURL,
+			"register": map[string]any{
+				"validRedirectUris":           []string{redirect},
+				"webOrigins":                  []string{s.baseURL(r)},
+				"validPostLogoutRedirectUris": postLogoutRegistrations(kc.PostLogoutURL),
+			},
+		}
+		warnings := []string{}
+		if kc.RedirectURL != "" && kc.RedirectURL != derived {
+			warnings = append(warnings, "설정한 Redirect URI 와 현재 접속 주소에서 유도한 값이 다릅니다. "+
+				"리버스 프록시를 쓴다면 정상이지만, Keycloak 에는 설정값("+redirect+")이 등록되어 있어야 합니다.")
+		}
+		if kc.PostLogoutURL == "" {
+			warnings = append(warnings, "로그아웃 후 이동 URL 이 비어 있어 로그아웃 시 Keycloak 화면에 머무릅니다. "+
+				"앱으로 돌아오게 하려면 값을 넣고 Keycloak 의 Valid post logout redirect URIs 에도 같은 값을 등록하십시오.")
+		}
+
+		cfg, _, err := s.Auth.OIDC.OAuth2Config(ctx, redirect)
 		if err != nil {
-			httpx.JSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+			out["ok"] = false
+			out["error"] = err.Error()
+			out["warnings"] = warnings
+			httpx.JSON(w, http.StatusOK, out)
 			return
 		}
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"ok":          true,
-			"authUrl":     cfg.Endpoint.AuthURL,
-			"tokenUrl":    cfg.Endpoint.TokenURL,
-			"redirectUri": cfg.RedirectURL,
-			"scopes":      cfg.Scopes,
-		})
+		out["ok"] = true
+		out["authUrl"] = cfg.Endpoint.AuthURL
+		out["tokenUrl"] = cfg.Endpoint.TokenURL
+		out["scopes"] = cfg.Scopes
+		if len(warnings) > 0 {
+			out["warnings"] = warnings
+		}
+		httpx.JSON(w, http.StatusOK, out)
 
 	case "permission":
 		perm, _ := s.Store.Permission(ctx)

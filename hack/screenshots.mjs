@@ -129,6 +129,12 @@ async function main() {
   console.log('관리자 로그인 완료')
   for (const screen of adminScreens) await visit(adminPage, screen)
 
+  // The Keycloak connection check, which prints the exact URIs to register.
+  await adminPage.goto(`${BASE}/admin/auth`, { waitUntil: 'domcontentloaded' })
+  await adminPage.getByRole('button', { name: '연결 점검' }).click()
+  await adminPage.getByText('Keycloak 에 그대로 등록하십시오').waitFor({ timeout: 20000 })
+  await capture(adminPage, 'admin-auth-register-uris')
+
   // The MCP OAuth diagnostic, which is the screen operators use to confirm a
   // client can actually complete the OAuth flow.
   await adminPage.goto(`${BASE}/admin/auth`, { waitUntil: 'domcontentloaded' })

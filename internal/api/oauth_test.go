@@ -11,7 +11,6 @@ import (
 
 	"github.com/hkjang/bbmcp/internal/audit"
 	"github.com/hkjang/bbmcp/internal/crypto"
-	"github.com/hkjang/bbmcp/internal/database"
 	"github.com/hkjang/bbmcp/internal/httpx"
 	"github.com/hkjang/bbmcp/internal/settings"
 )
@@ -57,7 +56,7 @@ func newOAuthServer(t *testing.T) (*Server, *settings.Store, context.Context) {
 		t.Skip("TEST_DATABASE_URL이 설정되지 않아 통합 테스트를 건너뜁니다")
 	}
 	ctx := context.Background()
-	db, err := database.Open(ctx, dsn)
+	db, err := openTestDB(t, dsn)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -354,3 +353,65 @@ func TestMCPOAuthDiagnosticWarnsWithoutClientID(t *testing.T) {
 func jsonBody(body string) *strings.Reader { return strings.NewReader(body) }
 
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
+
+func TestRegisterClientRejectsUnusableRedirect(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloak(t, false)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) {
+		kc.Issuer = kcSrv.URL
+		kc.MCPClientID = "bbmcp-mcp"
+	})
+
+	// Each of these would reach Keycloak and come back as an opaque
+	// "Invalid parameter: redirect_uri" page, so they are refused here.
+	for _, body := range []string{
+		`{"redirect_uris":["http://example.com/cb"]}`,
+		`{"redirect_uris":["http://127.0.0.1:*/cb"]}`,
+		`{"redirect_uris":["/relative/cb"]}`,
+		`{"redirect_uris":["https://app.local/cb#frag"]}`,
+	} {
+		rec := httptest.NewRecorder()
+		srv.registerClient(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/oauth/register", jsonBody(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s → 상태 %d, 400 이어야 합니다", body, rec.Code)
+			continue
+		}
+		if decode(t, rec)["error"] != "invalid_redirect_uri" {
+			t.Errorf("%s → error = %v", body, decode(t, rec)["error"])
+		}
+	}
+
+	// Loopback HTTP is how MCP clients actually receive the callback.
+	for _, body := range []string{
+		`{"redirect_uris":["http://127.0.0.1:41234/callback"]}`,
+		`{"redirect_uris":["http://localhost:8765/oauth/cb"]}`,
+		`{"redirect_uris":["https://app.company.local/cb"]}`,
+	} {
+		rec := httptest.NewRecorder()
+		srv.registerClient(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/oauth/register", jsonBody(body)))
+		if rec.Code != http.StatusCreated {
+			t.Errorf("%s → 상태 %d, 201 이어야 합니다 (%s)", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestMCPOAuthReportListsUrisToRegister(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloak(t, true)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) {
+		kc.Issuer = kcSrv.URL
+		kc.MCPClientID = "bbmcp-mcp"
+	})
+
+	rec := httptest.NewRecorder()
+	srv.testMCPOAuth(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/api/admin/test/mcp-oauth", nil))
+	body := decode(t, rec)
+
+	if body["webRedirectUri"] != "https://bbmcp.local/auth/oidc/callback" {
+		t.Errorf("webRedirectUri = %v", body["webRedirectUri"])
+	}
+	loopback, _ := body["loopbackRedirectUris"].([]any)
+	if len(loopback) != 2 || loopback[0] != "http://127.0.0.1:*" {
+		t.Errorf("loopbackRedirectUris = %v", body["loopbackRedirectUris"])
+	}
+}

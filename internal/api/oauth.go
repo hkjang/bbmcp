@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -62,10 +63,10 @@ func (s *Server) mountOAuth(r interface {
 
 // resourceURL is the identifier MCP clients use for this gateway.
 func (s *Server) resourceURL(r *http.Request, cfg settings.MCP) string {
-	if cfg.ResourceURL != "" {
-		return strings.TrimRight(cfg.ResourceURL, "/")
+	if normalized := httpx.NormalizeBaseURL(cfg.ResourceURL); normalized != "" {
+		return normalized
 	}
-	return strings.TrimRight(baseURL(r), "/")
+	return s.baseURL(r)
 }
 
 // protectedResource publishes the OAuth metadata an MCP client needs to find
@@ -268,6 +269,14 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 	if redirects == nil {
 		redirects = []string{}
 	}
+	// Handing out a client_id for a redirect URI Keycloak will not accept only
+	// moves the failure to a Keycloak error page the user cannot act on. Reject
+	// it here, where the message can say what to register.
+	if bad, reason := unusableRedirect(redirects); bad != "" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri",
+			fmt.Sprintf("리다이렉트 URI %q 를 사용할 수 없습니다: %s", bad, reason))
+		return
+	}
 
 	s.Audit.Write(ctx, audit.Entry{
 		Category: audit.CatAuth,
@@ -293,6 +302,41 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 		"token_endpoint_auth_method": "none",
 		"scope":                      scope,
 	})
+}
+
+// unusableRedirect finds a redirect URI that Keycloak would reject anyway.
+//
+// MCP clients listen on an ephemeral loopback port, so loopback HTTP is the
+// expected shape; everything else must be https. Wildcards, fragments and
+// relative URIs are never valid redirect targets.
+func unusableRedirect(uris []string) (string, string) {
+	for _, raw := range uris {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return raw, "값이 비어 있습니다"
+		}
+		u, err := url.Parse(value)
+		if err != nil {
+			return raw, "주소 형식이 올바르지 않습니다"
+		}
+		switch {
+		case u.Scheme == "":
+			return raw, "스킴이 없습니다 (http:// 또는 https://)"
+		case u.Fragment != "":
+			return raw, "프래그먼트(#)를 포함할 수 없습니다"
+		case strings.Contains(value, "*"):
+			return raw, "와일드카드는 클라이언트가 보낼 수 없습니다"
+		}
+		// A custom scheme (myapp://) is used by desktop clients; Keycloak
+		// accepts it when registered, so it passes here too.
+		if u.Scheme == "http" && !httpx.IsLoopbackHost(u.Host) {
+			return raw, "루프백이 아닌 주소는 https 여야 합니다"
+		}
+		if (u.Scheme == "http" || u.Scheme == "https") && u.Host == "" {
+			return raw, "호스트가 없습니다"
+		}
+	}
+	return "", ""
 }
 
 // writeOAuthError emits an RFC 6749 style error body.
@@ -330,6 +374,8 @@ type mcpOAuthReport struct {
 	KeycloakSupportsDCR bool              `json:"keycloakSupportsDynamicRegistration"`
 	GatewayDCREndpoint  string            `json:"gatewayRegistrationEndpoint,omitempty"`
 	MCPClientID         string            `json:"mcpClientId"`
+	WebRedirectURI      string            `json:"webRedirectUri"`
+	LoopbackRedirects   []string          `json:"loopbackRedirectUris"`
 	AcceptedAudiences   []string          `json:"acceptedAudiences"`
 	RequiredScope       string            `json:"requiredScope,omitempty"`
 	Scopes              []string          `json:"scopes"`
@@ -352,11 +398,19 @@ func (s *Server) testMCPOAuth(w http.ResponseWriter, r *http.Request) {
 	report := mcpOAuthReport{
 		ResourceURL:         resource,
 		ResourceMetadataURL: resource + "/.well-known/oauth-protected-resource",
-		Issuer:              strings.TrimRight(kc.Issuer, "/"),
-		MCPClientID:         kc.MCPClientID,
-		AcceptedAudiences:   kc.MCPAudienceSet(),
-		RequiredScope:       kc.MCPRequiredScope,
-		Scopes:              kc.MCPScopes,
+		WebRedirectURI:      s.redirectURI(r, kc.RedirectURL),
+		// MCP clients bind an ephemeral loopback port, so Keycloak needs a
+		// wildcard port on the public client or every attempt fails with
+		// "Invalid parameter: redirect_uri".
+		LoopbackRedirects: []string{
+			"http://127.0.0.1:*",
+			"http://localhost:*",
+		},
+		Issuer:            strings.TrimRight(kc.Issuer, "/"),
+		MCPClientID:       kc.MCPClientID,
+		AcceptedAudiences: kc.MCPAudienceSet(),
+		RequiredScope:     kc.MCPRequiredScope,
+		Scopes:            kc.MCPScopes,
 		ClientConfig: map[string]any{
 			"mcpServers": map[string]any{
 				"bbmcp": map[string]any{"type": "http", "url": resource + "/mcp"},
@@ -420,6 +474,14 @@ func (s *Server) testMCPOAuth(w http.ResponseWriter, r *http.Request) {
 		!strings.Contains(resource, "127.0.0.1") {
 		report.Warnings = append(report.Warnings,
 			"리소스 URL 이 평문 HTTP 입니다. 운영에서는 HTTPS 를 사용하십시오.")
+	}
+	// The most common failure in practice is a resource URL that does not match
+	// how clients actually reach the gateway, which sends them to a callback
+	// Keycloak has never seen.
+	if cfg.ResourceURL != "" && cfg.ResourceURL != s.baseURL(r) {
+		report.Warnings = append(report.Warnings,
+			"리소스 URL("+cfg.ResourceURL+")이 현재 접속 주소("+s.baseURL(r)+")와 다릅니다. "+
+				"리버스 프록시 뒤라면 정상이지만, MCP 클라이언트가 실제로 접속하는 주소여야 합니다.")
 	}
 
 	report.OK = report.Error == "" && strings.TrimSpace(kc.MCPClientID) != ""

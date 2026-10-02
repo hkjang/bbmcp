@@ -251,14 +251,15 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func baseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		scheme = "https"
+// baseURL is this gateway's public origin as the caller reached it.
+//
+// Forwarding headers are only believed when the operator said a proxy is in
+// front; otherwise a client could forge the origin bbmcp builds redirect URIs
+// from. The result is normalised so it matches what Keycloak has registered.
+func (s *Server) baseURL(r *http.Request) string {
+	trust := true
+	if sec, err := s.Store.Security(r.Context()); err == nil {
+		trust = sec.TrustProxyHeaders
 	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	return scheme + "://" + host
+	return httpx.RequestBaseURL(r, trust)
 }

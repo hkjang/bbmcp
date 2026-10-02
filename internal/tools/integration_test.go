@@ -190,7 +190,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Skip("TEST_DATABASE_URL이 설정되지 않아 통합 테스트를 건너뜁니다")
 	}
 	ctx := context.Background()
-	db, err := database.Open(ctx, dsn)
+	db, err := openTestDB(t, dsn)
 	if err != nil {
 		t.Fatalf("database.Open: %v", err)
 	}

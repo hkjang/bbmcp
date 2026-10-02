@@ -300,7 +300,26 @@ export interface KeycloakSettings {
   mcpAllowDynamicRegistration: boolean
 }
 
+export interface KeycloakTestReport {
+  ok: boolean
+  error?: string
+  authUrl?: string
+  tokenUrl?: string
+  scopes?: string[]
+  redirectUri: string
+  derivedRedirectUri: string
+  postLogoutUri?: string
+  register: {
+    validRedirectUris: string[]
+    webOrigins: string[]
+    validPostLogoutRedirectUris: string[]
+  }
+  warnings?: string[]
+}
+
 export interface MCPOAuthReport {
+  webRedirectUri?: string
+  loopbackRedirectUris?: string[]
   ok: boolean
   error?: string
   issuer?: string

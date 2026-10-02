@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -24,7 +25,6 @@ import (
 	"github.com/hkjang/bbmcp/internal/auth"
 	"github.com/hkjang/bbmcp/internal/bitbucket"
 	"github.com/hkjang/bbmcp/internal/crypto"
-	"github.com/hkjang/bbmcp/internal/database"
 	"github.com/hkjang/bbmcp/internal/identity"
 	"github.com/hkjang/bbmcp/internal/permission"
 	"github.com/hkjang/bbmcp/internal/policy"
@@ -132,7 +132,7 @@ func newGateway(t *testing.T, kc *keycloakStub) *gateway {
 	}
 	ctx := context.Background()
 
-	db, err := database.Open(ctx, dsn)
+	db, err := openTestDB(t, dsn)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -191,6 +191,9 @@ func newGateway(t *testing.T, kc *keycloakStub) *gateway {
 	}
 	if err := keys.SeedRoles(ctx); err != nil {
 		t.Fatalf("roles: %v", err)
+	}
+	if err := users.EnsureBootstrapAdmin(ctx, "admin", "bootstrap-password"); err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
 	}
 
 	authSvc := &auth.Service{
@@ -253,6 +256,43 @@ func (g *gateway) post(t *testing.T, path, bearer, body string) (*http.Response,
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	resp, err := g.srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp, out
+}
+
+// login signs in and returns a cookie jar holding the session.
+func (g *gateway) login(t *testing.T, username, password string) *cookiejar.Jar {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar: %v", err)
+	}
+	client := &http.Client{Jar: jar}
+	resp, err := client.Post(g.srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"username":"`+username+`","password":"`+password+`"}`))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login 상태 %d", resp.StatusCode)
+	}
+	return jar
+}
+
+func (g *gateway) putJSON(t *testing.T, jar *cookiejar.Jar, path, body string) (*http.Response, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, g.srv.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Jar: jar}).Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
@@ -469,4 +509,87 @@ func between(s, start, end string) string {
 		return ""
 	}
 	return rest[:j]
+}
+
+// TestLogoutOmitsUnregisteredPostLogoutRedirect guards the most common source
+// of "Invalid parameter" on logout: sending a post_logout_redirect_uri that
+// nobody registered in Keycloak.
+func TestLogoutOmitsUnregisteredPostLogoutRedirect(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+
+	// Nothing configured: the parameter must not be sent at all.
+	resp, body := gw.post(t, "/api/auth/logout", "", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("상태 코드 %d", resp.StatusCode)
+	}
+	logoutURL, _ := body["ssoLogoutUrl"].(string)
+	if logoutURL == "" {
+		t.Fatal("ssoLogoutUrl 이 비어 있습니다")
+	}
+	if strings.Contains(logoutURL, "post_logout_redirect_uri") {
+		t.Fatalf("등록되지 않은 post_logout_redirect_uri 를 보냈습니다: %s", logoutURL)
+	}
+	if !strings.Contains(logoutURL, "client_id=bbmcp") {
+		t.Errorf("client_id 가 없습니다: %s", logoutURL)
+	}
+
+	// Configured deliberately: it is sent, normalised.
+	cfg, _ := gw.store.Keycloak(gw.ctx)
+	cfg.PostLogoutURL = "https://BBMCP.local:443/"
+	if err := gw.store.Put(gw.ctx, settings.KeyKeycloak, cfg, "test"); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	_, body = gw.post(t, "/api/auth/logout", "", "")
+	logoutURL, _ = body["ssoLogoutUrl"].(string)
+	if !strings.Contains(logoutURL, "post_logout_redirect_uri=https%3A%2F%2Fbbmcp.local") {
+		t.Fatalf("정규화된 post_logout_redirect_uri 가 없습니다: %s", logoutURL)
+	}
+}
+
+// TestSettingsRejectMalformedUrls keeps a typo from becoming a Keycloak error
+// page later in the flow.
+func TestSettingsRejectMalformedUrls(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+
+	// An admin session is needed for the settings API.
+	jar := gw.login(t, "admin", "bootstrap-password")
+
+	cases := []struct{ name, payload string }{
+		{"스킴 없는 Issuer", `{"value":{"enabled":true,"issuer":"sso.company.local/realms/x","clientId":"bbmcp"},"secrets":{}}`},
+		{"질의 문자열 Issuer", `{"value":{"enabled":true,"issuer":"https://sso.local/realms/x?a=1","clientId":"bbmcp"},"secrets":{}}`},
+		{"경로가 틀린 Redirect", `{"value":{"enabled":true,"issuer":"` + kc.srv.URL + `","clientId":"bbmcp","redirectUrl":"https://bbmcp.local/callback"},"secrets":{}}`},
+		{"SSO 켜고 Issuer 없음", `{"value":{"enabled":true,"issuer":"","clientId":"bbmcp"},"secrets":{}}`},
+	}
+	for _, c := range cases {
+		resp, body := gw.putJSON(t, jar, "/api/admin/settings/keycloak", c.payload)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: 상태 %d, 400 이어야 합니다 (%v)", c.name, resp.StatusCode, body)
+			continue
+		}
+		if body["code"] != "INVALID_URL" {
+			t.Errorf("%s: code = %v", c.name, body["code"])
+		}
+	}
+
+	// A valid payload is normalised on the way in.
+	resp, _ := gw.putJSON(t, jar, "/api/admin/settings/keycloak",
+		`{"value":{"enabled":true,"issuer":"`+kc.srv.URL+`/","clientId":" bbmcp ","redirectUrl":"https://BBMCP.local:443/auth/oidc/callback"},"secrets":{}}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("정상 설정이 거부되었습니다: %d", resp.StatusCode)
+	}
+	saved, err := gw.store.Keycloak(gw.ctx)
+	if err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	if saved.Issuer != kc.srv.URL {
+		t.Errorf("issuer = %q (후행 슬래시가 정리되어야 합니다)", saved.Issuer)
+	}
+	if saved.ClientID != "bbmcp" {
+		t.Errorf("clientId = %q (공백이 정리되어야 합니다)", saved.ClientID)
+	}
+	if saved.RedirectURL != "https://bbmcp.local/auth/oidc/callback" {
+		t.Errorf("redirectUrl = %q", saved.RedirectURL)
+	}
 }

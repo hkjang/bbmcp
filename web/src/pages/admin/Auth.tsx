@@ -14,8 +14,8 @@ import {
   StatList,
   TableScroll,
 } from '../../components/ui'
-import { api, type KeycloakSettings, type MCPOAuthReport } from '../../lib/api'
-import { useConnectivityTest, useSettingsGroup } from '../../lib/useSettingsGroup'
+import { api, type KeycloakSettings, type KeycloakTestReport, type MCPOAuthReport } from '../../lib/api'
+import { useSettingsGroup } from '../../lib/useSettingsGroup'
 
 const loginFields: Field<KeycloakSettings>[] = [
   { kind: 'switch', key: 'enabled', label: 'Keycloak SSO 사용', description: '끄면 로컬 계정 로그인만 허용합니다.' },
@@ -39,7 +39,7 @@ const loginFields: Field<KeycloakSettings>[] = [
     kind: 'text',
     key: 'redirectUrl',
     label: 'Redirect URI',
-    description: '비워 두면 요청 호스트 기준 /auth/oidc/callback 을 사용합니다.',
+    description: '비워 두면 접속 주소 기준 /auth/oidc/callback 을 사용합니다. 여기 값과 Keycloak 등록값이 정확히 같아야 합니다.',
     placeholder: 'https://bbmcp.company.local/auth/oidc/callback',
     span: 12,
   },
@@ -47,7 +47,9 @@ const loginFields: Field<KeycloakSettings>[] = [
     kind: 'text',
     key: 'postLogoutUrl',
     label: '로그아웃 후 이동 URL',
-    placeholder: 'https://bbmcp.company.local/',
+    description:
+      '비워 두면 로그아웃 시 이 값을 보내지 않습니다(오류 없음). 값을 넣으면 Keycloak 의 Valid post logout redirect URIs 에도 같은 값을 등록해야 합니다.',
+    placeholder: 'https://bbmcp.company.local',
     span: 12,
   },
   { kind: 'tags', key: 'scopes', label: '웹 로그인 스코프', placeholder: 'openid, profile, email' },
@@ -126,7 +128,9 @@ const mcpFields: Field<KeycloakSettings>[] = [
 export function AdminAuthPage() {
   const { query, draft, setDraft, secrets, setSecrets, secretPresence, save } =
     useSettingsGroup<KeycloakSettings>('keycloak')
-  const test = useConnectivityTest('keycloak')
+  const test = useMutation({
+    mutationFn: () => api.post<KeycloakTestReport>('/api/admin/test/keycloak'),
+  })
   const oauthTest = useMutation({
     mutationFn: () => api.post<MCPOAuthReport>('/api/admin/test/mcp-oauth'),
   })
@@ -143,7 +147,7 @@ export function AdminAuthPage() {
             variant="default"
             leftSection={<IconPlugConnected size={18} />}
             loading={test.isPending}
-            onClick={() => test.mutate(undefined)}
+            onClick={() => test.mutate()}
           >
             연결 점검
           </Button>
@@ -153,16 +157,7 @@ export function AdminAuthPage() {
       {query.isLoading ? <LoadingBlock /> : null}
       {query.error ? <ErrorBlock error={query.error} /> : null}
 
-      {test.data ? (
-        <Alert
-          color={test.data.ok ? 'teal' : 'red'}
-          variant="light"
-          mb="lg"
-          title={test.data.ok ? '연결 정상' : '연결 실패'}
-        >
-          <JsonBlock value={test.data} maxHeight={220} />
-        </Alert>
-      ) : null}
+      {test.data ? <KeycloakReport report={test.data} /> : null}
 
       {draft ? (
         <>
@@ -280,6 +275,83 @@ export function AdminAuthPage() {
   )
 }
 
+function KeycloakReport({ report }: { report: KeycloakTestReport }) {
+  return (
+    <Section
+      title="Keycloak 연결 점검 결과"
+      actions={
+        <Badge color={report.ok ? 'teal' : 'red'} variant="light">
+          {report.ok ? '연결 정상' : '연결 실패'}
+        </Badge>
+      }
+    >
+      {report.error ? (
+        <Alert color="red" variant="light" icon={<IconAlertTriangle size={20} />} mb="md">
+          {report.error}
+        </Alert>
+      ) : null}
+
+      {report.warnings?.length ? (
+        <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={20} />} mb="md" title="확인하십시오">
+          <Stack gap={4}>
+            {report.warnings.map((w) => (
+              <Text key={w} size="sm">
+                • {w}
+              </Text>
+            ))}
+          </Stack>
+        </Alert>
+      ) : null}
+
+      <StatList
+        items={[
+          { label: '인가 엔드포인트', value: report.authUrl || '—' },
+          { label: '토큰 엔드포인트', value: report.tokenUrl || '—' },
+          { label: '요청 스코프', value: report.scopes?.join(', ') || '—' },
+        ]}
+      />
+
+      <Alert variant="light" color="bbblue" mt="lg" title="Keycloak 에 그대로 등록하십시오">
+        <Text size="sm" mb="sm">
+          아래 값은 bbmcp 가 실제로 보내는 문자열입니다. 한 글자라도 다르면 Keycloak 이
+          <Code>Invalid parameter: redirect_uri</Code> 로 거부합니다.
+        </Text>
+        <Stack gap="sm">
+          <div>
+            <Text size="sm" fw={600} mb={4}>
+              Valid redirect URIs
+            </Text>
+            {report.register.validRedirectUris.map((uri) => (
+              <CopyField key={uri} value={uri} />
+            ))}
+          </div>
+          <div>
+            <Text size="sm" fw={600} mb={4}>
+              Web origins
+            </Text>
+            {report.register.webOrigins.map((uri) => (
+              <CopyField key={uri} value={uri} />
+            ))}
+          </div>
+          <div>
+            <Text size="sm" fw={600} mb={4}>
+              Valid post logout redirect URIs
+            </Text>
+            {report.register.validPostLogoutRedirectUris.length > 0 ? (
+              report.register.validPostLogoutRedirectUris.map((uri) => <CopyField key={uri} value={uri} />)
+            ) : (
+              <Text size="sm" c="dimmed">
+                설정하지 않았습니다. bbmcp 는 로그아웃 시 이 값을 보내지 않으므로 오류는 나지 않고,
+                로그아웃 후 Keycloak 화면에 머무릅니다.
+              </Text>
+            )}
+          </div>
+        </Stack>
+      </Alert>
+    </Section>
+  )
+}
+
 function OAuthReport({ report }: { report: MCPOAuthReport }) {
   const as = report.authorizationServer ?? {}
   return (
@@ -331,6 +403,21 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
         클라이언트가 처음 읽는 주소
       </Text>
       <CopyField value={report.resourceMetadataUrl} />
+
+      {report.loopbackRedirectUris?.length ? (
+        <Alert variant="light" color="bbblue" mt="lg" title="MCP 공개 클라이언트에 등록할 리다이렉트 URI">
+          <Text size="sm" mb="sm">
+            MCP 클라이언트는 매번 다른 루프백 포트로 콜백을 받습니다. 아래 와일드카드를 Keycloak 공개
+            클라이언트의 Valid redirect URIs 에 넣지 않으면 로그인 창에서
+            <Code>Invalid parameter: redirect_uri</Code> 가 납니다.
+          </Text>
+          <Stack gap={6}>
+            {report.loopbackRedirectUris.map((uri) => (
+              <CopyField key={uri} value={uri} />
+            ))}
+          </Stack>
+        </Alert>
+      ) : null}
 
       <Text fw={600} mt="lg" mb="xs">
         클라이언트 설정 예시

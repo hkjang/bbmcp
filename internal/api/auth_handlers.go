@@ -48,13 +48,17 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	kc, _ := s.Store.Keycloak(ctx)
 	logout := ""
 	if kc.Enabled && kc.Issuer != "" {
-		target := kc.PostLogoutURL
-		if target == "" {
-			target = baseURL(r) + "/"
+		params := url.Values{}
+		params.Set("client_id", kc.ClientID)
+		// post_logout_redirect_uri must be registered in Keycloak. Sending one
+		// that is not registered makes Keycloak refuse the whole logout with
+		// "Invalid parameter", so it is only sent when the operator configured
+		// it deliberately — and they are told to register it.
+		if target := httpx.NormalizeRedirectURI(kc.PostLogoutURL); target != "" {
+			params.Set("post_logout_redirect_uri", target)
 		}
 		logout = strings.TrimRight(kc.Issuer, "/") +
-			"/protocol/openid-connect/logout?client_id=" + url.QueryEscape(kc.ClientID) +
-			"&post_logout_redirect_uri=" + url.QueryEscape(target)
+			"/protocol/openid-connect/logout?" + params.Encode()
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "ssoLogoutUrl": logout})
 }
@@ -68,13 +72,20 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, s.decorate(r, id))
 }
 
-// redirectURI is the callback the gateway registers with Keycloak. The admin
-// may override it, which matters behind a reverse proxy.
+// CallbackPath is the OIDC redirect path this gateway listens on.
+const CallbackPath = "/auth/oidc/callback"
+
+// redirectURI is the callback bbmcp sends to Keycloak.
+//
+// Keycloak matches it as a string against its registered list, so the value is
+// normalised and the operator is shown the exact same string to register. An
+// explicit setting wins, because a reverse proxy can make the derived origin
+// differ from the public one.
 func (s *Server) redirectURI(r *http.Request, configured string) string {
-	if configured != "" {
-		return configured
+	if normalized := httpx.NormalizeRedirectURI(configured); normalized != "" {
+		return normalized
 	}
-	return baseURL(r) + "/auth/oidc/callback"
+	return s.baseURL(r) + CallbackPath
 }
 
 // oidcStart begins an authorization code flow. With silent=1 the request adds
