@@ -2,6 +2,7 @@ package apikey
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
@@ -239,7 +240,7 @@ func (s *Service) Create(ctx context.Context, userID int64, name, roleName strin
 		}
 	}
 
-	prefix, err := crypto.RandomToken(6)
+	prefix, err := randomPrefix(10)
 	if err != nil {
 		return nil, err
 	}
@@ -360,10 +361,13 @@ type Verified struct {
 }
 
 // Verify authenticates a raw API key string.
+//
+// The secret segment is base64url and may itself contain "_", so the key is
+// split into exactly three fields rather than on every separator.
 func (s *Service) Verify(ctx context.Context, raw string) (*Verified, error) {
 	raw = strings.TrimSpace(raw)
-	parts := strings.Split(raw, "_")
-	if len(parts) != 3 || parts[0] != Prefix {
+	parts := strings.SplitN(raw, "_", 3)
+	if len(parts) != 3 || parts[0] != Prefix || parts[1] == "" || parts[2] == "" {
 		return nil, ErrInvalidKey
 	}
 	k, err := scanKey(s.pool.QueryRow(ctx, `SELECT `+keyCols+`
@@ -416,6 +420,23 @@ func (s *Service) DueForRotation(ctx context.Context, userID int64) ([]Key, erro
 		}
 	}
 	return out, nil
+}
+
+// prefixAlphabet avoids "_" so the key prefix never collides with the
+// separator used in the key format bbmcp_<prefix>_<secret>.
+const prefixAlphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// randomPrefix returns a lookup prefix of n alphabet characters.
+func randomPrefix(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	out := make([]byte, n)
+	for i, b := range buf {
+		out[i] = prefixAlphabet[int(b)%len(prefixAlphabet)]
+	}
+	return string(out), nil
 }
 
 func intersect(a, b []string) []string {

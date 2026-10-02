@@ -42,6 +42,8 @@ type MappingError struct {
 	KeycloakSub      string    `json:"keycloakSub"`
 	KeycloakUsername string    `json:"keycloakUsername"`
 	Reason           string    `json:"reason"`
+	Occurrences      int       `json:"occurrences"`
+	FirstSeenAt      time.Time `json:"firstSeenAt"`
 	OccurredAt       time.Time `json:"occurredAt"`
 }
 
@@ -123,14 +125,14 @@ func (m *Mapper) Resolve(ctx context.Context, sub, username string) (*Mapping, e
 
 // autoMap performs the first-contact lookup by exact username match.
 func (m *Mapper) autoMap(ctx context.Context, sub, username string) (*Mapping, error) {
+	// A gateway that has not been pointed at Bitbucket yet is a configuration
+	// state, not a per-user mapping failure, so it is not recorded as one.
 	adapter, _, err := m.provider.Adapter(ctx)
 	if err != nil {
-		m.recordError(ctx, sub, username, err.Error())
 		return nil, err
 	}
 	cred, err := m.provider.ServiceCredential(ctx)
 	if err != nil {
-		m.recordError(ctx, sub, username, err.Error())
 		return nil, err
 	}
 	bbUser, err := adapter.FindUserByUsername(ctx, cred, username)
@@ -247,10 +249,17 @@ func (m *Mapper) ManualMap(ctx context.Context, sub, keycloakUsername, bitbucket
 	return m.Upsert(ctx, sub, keycloakUsername, bbUser, "manual")
 }
 
+// recordError stores one row per subject, counting repeats instead of growing
+// the table on every request that retries a failed lookup.
 func (m *Mapper) recordError(ctx context.Context, sub, username, reason string) {
-	_, _ = m.pool.Exec(ctx,
-		`INSERT INTO identity_mapping_errors(keycloak_sub, keycloak_username, reason) VALUES ($1,$2,$3)`,
-		sub, username, reason)
+	_, _ = m.pool.Exec(ctx, `
+		INSERT INTO identity_mapping_errors(keycloak_sub, keycloak_username, reason)
+		VALUES ($1,$2,$3)
+		ON CONFLICT (keycloak_sub) DO UPDATE
+		   SET keycloak_username = EXCLUDED.keycloak_username,
+		       reason = EXCLUDED.reason,
+		       occurrences = identity_mapping_errors.occurrences + 1,
+		       occurred_at = NOW()`, sub, username, reason)
 }
 
 // Errors lists recent mapping failures.
@@ -259,7 +268,8 @@ func (m *Mapper) Errors(ctx context.Context, limit int) ([]MappingError, error) 
 		limit = 100
 	}
 	rows, err := m.pool.Query(ctx,
-		`SELECT id, keycloak_sub, keycloak_username, reason, occurred_at
+		`SELECT id, keycloak_sub, keycloak_username, reason, occurrences,
+		        first_seen_at, occurred_at
 		 FROM identity_mapping_errors ORDER BY occurred_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -268,7 +278,8 @@ func (m *Mapper) Errors(ctx context.Context, limit int) ([]MappingError, error) 
 	out := []MappingError{}
 	for rows.Next() {
 		var e MappingError
-		if err := rows.Scan(&e.ID, &e.KeycloakSub, &e.KeycloakUsername, &e.Reason, &e.OccurredAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.KeycloakSub, &e.KeycloakUsername, &e.Reason,
+			&e.Occurrences, &e.FirstSeenAt, &e.OccurredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

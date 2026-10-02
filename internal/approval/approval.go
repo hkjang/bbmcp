@@ -181,9 +181,11 @@ func (e *Engine) Decide(ctx context.Context, id uuid.UUID, approve bool, decided
 	}
 	if _, err := e.pool.Exec(ctx, `
 		UPDATE approval_requests
-		SET status=$2, decided_by=$3, decision_note=$4,
-		    approved_at = CASE WHEN $2=$5 THEN NOW() ELSE NULL END
-		WHERE id=$1`, id, status, decidedBy, note, StatusApproved); err != nil {
+		SET status = $2::VARCHAR,
+		    decided_by = $3,
+		    decision_note = $4,
+		    approved_at = CASE WHEN $2::VARCHAR = 'approved' THEN NOW() ELSE NULL END
+		WHERE id = $1`, id, status, decidedBy, note); err != nil {
 		return nil, err
 	}
 	return e.ByID(ctx, id)
