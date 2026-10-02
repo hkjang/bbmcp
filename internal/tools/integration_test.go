@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,6 +51,10 @@ type fakeBitbucket struct {
 	prVersion   int
 	comments    []string
 	merged      bool
+
+	// prFetchFails makes the pull request lookup answer 503, which is how a
+	// real Bitbucket outage hides the current PR version from the gateway.
+	prFetchFails bool
 }
 
 func newFakeBitbucket(t *testing.T) *fakeBitbucket {
@@ -144,6 +150,10 @@ func newFakeBitbucket(t *testing.T) *fakeBitbucket {
 	// Pull request read and write.
 	mux.HandleFunc("/rest/api/1.0/projects/AI/repos/text2sql/pull-requests/7",
 		func(w http.ResponseWriter, r *http.Request) {
+			if f.prFetchFails {
+				http.Error(w, `{"errors":[{"message":"service unavailable"}]}`, http.StatusServiceUnavailable)
+				return
+			}
 			write(w, `{"id":7,"version":`+itoa(f.prVersion)+`,"title":"fix","state":"OPEN","open":true,
 				"fromRef":{"id":"refs/heads/feature/x"},"toRef":{"id":"refs/heads/master"}}`)
 		})
@@ -468,6 +478,97 @@ func TestMergeApprovalGoesStaleWhenPullRequestAdvances(t *testing.T) {
 	}
 	if f.bitbucket.merged {
 		t.Fatal("a stale approval merged the pull request")
+	}
+}
+
+// A merge approval pins the PR version. If the gateway cannot read the current
+// version it must refuse instead of merging on an unverifiable assumption, and
+// it must leave the approval usable once Bitbucket recovers.
+func TestMergeApprovalDeniedWhenPullRequestVersionUnknown(t *testing.T) {
+	f := newFixture(t)
+	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+	f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+	if err := f.registry.Update(f.ctx, "bitbucket_merge_pull_request", true, true, tools.RoleExecutor); err != nil {
+		t.Fatalf("enable merge tool: %v", err)
+	}
+
+	args := tools.Args{"project": "AI", "repository": "text2sql", "pullRequest": 7}
+	_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", args)
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Approval == nil {
+		t.Fatalf("expected an approval request, got %v", err)
+	}
+	if te.Approval.PRVersion == nil {
+		t.Fatalf("approval did not pin the PR version: %+v", te.Approval)
+	}
+	if _, err := f.approvals.Decide(f.ctx, te.Approval.ID, true, "admin", ""); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	// Bitbucket stops answering pull request reads.
+	f.bitbucket.prFetchFails = true
+
+	withID := cloneArgs(args)
+	withID["approvalId"] = te.Approval.ID.String()
+	_, err = f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", withID)
+	if got := codeOf(t, err); got != tools.CodeApprovalStale {
+		t.Fatalf("expected APPROVAL_STALE, got %s (%v)", got, err)
+	}
+	if f.bitbucket.merged {
+		t.Fatal("the pull request was merged without a version check")
+	}
+	// The approval must survive the outage so the caller can retry.
+	req, err := f.approvals.ByID(f.ctx, te.Approval.ID)
+	if err != nil {
+		t.Fatalf("ByID: %v", err)
+	}
+	if req.Status != approval.StatusApproved {
+		t.Fatalf("approval status = %q, want %q", req.Status, approval.StatusApproved)
+	}
+}
+
+// An approval is single use even when the same id arrives concurrently.
+func TestApprovalIsConsumedOnceUnderConcurrency(t *testing.T) {
+	f := newFixture(t)
+
+	args := tools.Args{
+		"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": "검토 의견",
+	}
+	userID := int64(1)
+	req, err := f.approvals.Create(f.ctx, "sub-hkjang", &userID, "hkjang",
+		"bitbucket_comment_pull_request", args, "AI/text2sql#7", nil, time.Minute)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.approvals.Decide(f.ctx, req.ID, true, "admin", ""); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	const workers = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	var ok, failed int64
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := f.approvals.Check(f.ctx, req.ID, "sub-hkjang",
+				"bitbucket_comment_pull_request", cloneArgs(args), nil); err != nil {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+			atomic.AddInt64(&ok, 1)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if ok != 1 {
+		t.Fatalf("%d of %d concurrent checks consumed the same approval, want exactly 1", ok, workers)
+	}
+	if failed != workers-1 {
+		t.Fatalf("failed checks = %d, want %d", failed, workers-1)
 	}
 }
 
