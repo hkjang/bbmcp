@@ -13,10 +13,9 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     npm_config_audit=false
 
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --omit=optional --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 
 COPY web/ ./
-COPY internal/webui/dist /src/internal/webui/dist
 RUN npm run build
 
 # ---- Stage 2: build the server ------------------------------------------
