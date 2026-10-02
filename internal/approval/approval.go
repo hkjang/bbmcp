@@ -194,7 +194,10 @@ func (e *Engine) Decide(ctx context.Context, id uuid.UUID, approve bool, decided
 // Check validates an approval for a tool call and marks it consumed.
 //
 // currentPRVersion is compared when the approval recorded one, which is how a
-// merge approval is invalidated by a new commit on the pull request.
+// merge approval is invalidated by a new commit on the pull request. A nil
+// currentPRVersion against a pinned approval is a refusal, not a pass: the
+// version could not be verified. Consumption is a conditional UPDATE, so one
+// approval is spent exactly once even under concurrent calls.
 func (e *Engine) Check(ctx context.Context, id uuid.UUID, sub, toolName string,
 	args map[string]any, currentPRVersion *int) (*Request, error) {
 	req, err := e.ByID(ctx, id)
@@ -218,14 +221,27 @@ func (e *Engine) Check(ctx context.Context, id uuid.UUID, sub, toolName string,
 	case req.ArgumentsHash != Hash(toolName, args):
 		return nil, fmt.Errorf("%w: 승인 이후 인자가 변경되었습니다", ErrStale)
 	}
+	// An approval that pinned a PR version is only usable while that version can
+	// be confirmed: an unreadable pull request must fail closed, not merge on an
+	// unverifiable assumption. The approval itself stays usable for a retry.
+	if req.PRVersion != nil && currentPRVersion == nil {
+		return nil, fmt.Errorf("%w: 현재 PR 버전을 확인할 수 없습니다", ErrStale)
+	}
 	if req.PRVersion != nil && currentPRVersion != nil && *req.PRVersion != *currentPRVersion {
 		return nil, fmt.Errorf("%w: 승인 시 PR 버전 %d, 현재 %d",
 			ErrStale, *req.PRVersion, *currentPRVersion)
 	}
-	if _, err := e.pool.Exec(ctx,
-		`UPDATE approval_requests SET status=$2, consumed_at=NOW() WHERE id=$1`,
-		id, StatusConsumed); err != nil {
+	// Consume conditionally so that concurrent calls carrying the same approval
+	// id cannot all pass: exactly one UPDATE sees status 'approved'.
+	tag, err := e.pool.Exec(ctx,
+		`UPDATE approval_requests SET status=$2::VARCHAR, consumed_at=NOW()
+		 WHERE id=$1 AND status='approved'`,
+		id, StatusConsumed)
+	if err != nil {
 		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("%w: 이미 사용된 승인입니다", ErrStale)
 	}
 	return req, nil
 }
