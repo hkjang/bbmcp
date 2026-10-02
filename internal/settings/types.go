@@ -5,6 +5,8 @@
 // are never returned to the browser in plaintext.
 package settings
 
+import "strings"
+
 // Keys for each settings group.
 const (
 	KeyKeycloak   = "keycloak"
@@ -34,6 +36,40 @@ type Keycloak struct {
 	AutoProvision   bool     `json:"autoProvision"`
 	InsecureSkipTLS bool     `json:"insecureSkipTls"`
 	RequireRole     string   `json:"requireRole"`
+
+	// MCP OAuth. An MCP client is a public client that discovers the
+	// authorization server through this gateway and signs in with PKCE, so it
+	// uses its own Keycloak client rather than the confidential one the web
+	// console uses.
+	MCPOAuthEnabled  bool     `json:"mcpOauthEnabled"`
+	MCPClientID      string   `json:"mcpClientId"`
+	MCPAudiences     []string `json:"mcpAudiences"`
+	MCPScopes        []string `json:"mcpScopes"`
+	MCPRequiredScope string   `json:"mcpRequiredScope"`
+	MCPAllowDCR      bool     `json:"mcpAllowDynamicRegistration"`
+}
+
+// MCPAudienceSet returns the client identifiers an MCP access token may name,
+// falling back to the configured clients when the operator listed none.
+func (k Keycloak) MCPAudienceSet() []string {
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[strings.ToLower(v)] {
+			return
+		}
+		seen[strings.ToLower(v)] = true
+		out = append(out, v)
+	}
+	for _, a := range k.MCPAudiences {
+		add(a)
+	}
+	if len(out) == 0 {
+		add(k.MCPClientID)
+		add(k.ClientID)
+	}
+	return out
 }
 
 // DefaultKeycloak returns the shipped defaults.
@@ -47,6 +83,10 @@ func DefaultKeycloak() Keycloak {
 		SilentSSO:       true,
 		SilentSSOMaxAge: 0,
 		AutoProvision:   true,
+		MCPOAuthEnabled: true,
+		MCPClientID:     "bbmcp-mcp",
+		MCPScopes:       []string{"openid", "profile", "email", "offline_access"},
+		MCPAllowDCR:     true,
 	}
 }
 

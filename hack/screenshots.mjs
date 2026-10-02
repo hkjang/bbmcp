@@ -62,7 +62,7 @@ async function signIn(page, who) {
   await page.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
   await page.getByLabel('아이디').fill(who.username)
   await page.locator('input[type="password"]').first().fill(who.password)
-  await page.getByRole('button', { name: '로그인' }).click()
+  await page.getByRole('button', { name: '로그인', exact: true }).click()
   await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 20000 })
   await page.waitForLoadState('networkidle').catch(() => {})
 }
@@ -117,7 +117,7 @@ async function main() {
   const anonPage = await anon.newPage()
   watch(anonPage, 'login')
   await anonPage.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
-  await anonPage.getByRole('button', { name: '로그인' }).waitFor()
+  await anonPage.getByRole('button', { name: '로그인', exact: true }).waitFor()
   await capture(anonPage, 'login')
   await anon.close()
 
@@ -128,6 +128,13 @@ async function main() {
   await signIn(adminPage, ADMIN)
   console.log('관리자 로그인 완료')
   for (const screen of adminScreens) await visit(adminPage, screen)
+
+  // The MCP OAuth diagnostic, which is the screen operators use to confirm a
+  // client can actually complete the OAuth flow.
+  await adminPage.goto(`${BASE}/admin/auth`, { waitUntil: 'domcontentloaded' })
+  await adminPage.getByRole('button', { name: 'MCP OAuth 점검' }).click()
+  await adminPage.getByText('MCP OAuth 점검 결과').waitFor({ timeout: 20000 })
+  await capture(adminPage, 'admin-auth-mcp-oauth')
 
   // Profile menu, which carries the version information.
   await adminPage.goto(`${BASE}/admin`, { waitUntil: 'domcontentloaded' })
@@ -184,7 +191,7 @@ async function main() {
   const mobilePage = await mobileCtx.newPage()
   watch(mobilePage, 'mobile')
   await mobilePage.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
-  await mobilePage.getByRole('button', { name: '로그인' }).waitFor()
+  await mobilePage.getByRole('button', { name: '로그인', exact: true }).waitFor()
   await capture(mobilePage, 'mobile-login')
   await signIn(mobilePage, USER)
   await capture(mobilePage, 'mobile-overview')

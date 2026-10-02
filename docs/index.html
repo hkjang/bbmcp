@@ -43,7 +43,7 @@
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "AI Gateway",
       "operatingSystem": "Linux (Docker)",
-      "softwareVersion": "0.1.0",
+      "softwareVersion": "0.2.0",
       "description": "Bitbucket Server 6.9.1 용 MCP(Model Context Protocol) 게이트웨이. Keycloak SSO 로 사용자를 인증하고, 요청자 본인의 Bitbucket 유효 권한으로만 저장소와 풀 리퀘스트에 접근하도록 강제하며, 쓰기 작업에는 승인을 요구하고 모든 호출을 감사 기록에 남깁니다.",
       "url": "https://hkjang.github.io/bbmcp/",
       "downloadUrl": "https://github.com/hkjang/bbmcp/releases",
@@ -124,7 +124,7 @@
       "inLanguage": "ko",
       "totalTime": "PT10M",
       "step": [
-        { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.1.0.tar.gz 로 릴리스 이미지를 적재합니다." },
+        { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.2.0.tar.gz 로 릴리스 이미지를 적재합니다." },
         { "@type": "HowToStep", "position": 2, "name": "환경변수 준비", "text": "DATABASE_URL, BOOTSTRAP_ADMIN, BOOTSTRAP_ADMIN_PASSWORD, ENCRYPTION_KEY 네 개를 설정합니다." },
         { "@type": "HowToStep", "position": 3, "name": "기동", "text": "docker compose -f deploy/docker-compose.yml up -d 로 PostgreSQL 과 함께 기동합니다." },
         { "@type": "HowToStep", "position": 4, "name": "관리자 설정", "text": "관리자 콘솔에서 Keycloak, Bitbucket 서비스 계정, 접근 정책, 도구 활성화를 설정합니다." }
@@ -279,6 +279,11 @@
           <code>prompt=none</code> 을 시도해, 기존 SSO 세션이 있으면 클릭 없이 들어갑니다.</p>
       </article>
       <article class="card">
+        <h3>MCP OAuth 자동 연결</h3>
+        <p>클라이언트가 401 응답에서 인가 서버를 스스로 찾아 PKCE 로 로그인합니다. RFC 9728·8414·7591 을
+          지원하고, 토큰의 대상(aud/azp)과 스코프까지 검증합니다.</p>
+      </article>
+      <article class="card">
         <h3>MCP 도구 33종</h3>
         <p>조회·작성·실행 3단계로 나뉘며 고수준 컨텍스트 도구를 포함합니다.
           <code>bitbucket_pr_review_context</code> 하나로 PR·diff·커밋·댓글·활동을 한 번에 수집합니다.</p>
@@ -341,6 +346,10 @@
         <figcaption>접근 정책 — 허용·차단과 위험도 상한</figcaption>
       </figure>
       <figure>
+        <img src="screenshots/admin-auth-mcp-oauth.png" alt="MCP OAuth 설정과 점검 결과 화면" loading="lazy" width="1440" height="900">
+        <figcaption>MCP OAuth — 디스커버리와 등록 상태 점검</figcaption>
+      </figure>
+      <figure>
         <img src="screenshots/admin-identity.png" alt="식별 매핑 화면: Keycloak 주체와 Bitbucket 사용자 ID 연결 목록" loading="lazy" width="1440" height="900">
         <figcaption>식별 매핑 — Keycloak sub ↔ Bitbucket user.id</figcaption>
       </figure>
@@ -391,9 +400,9 @@
     </p>
 
     <h3>1. 이미지 적재</h3>
-    <pre><code>docker load -i bbmcp-v0.1.0.tar.gz
+    <pre><code>docker load -i bbmcp-v0.2.0.tar.gz
 docker images | grep bbmcp
-# bbmcp   v0.1.0   ...</code></pre>
+# bbmcp   v0.2.0   ...</code></pre>
 
     <h3>2. 환경변수</h3>
     <div class="table-scroll">
@@ -466,6 +475,25 @@ curl -fsS http://localhost:8080/healthz</code></pre>
         필요하지 않습니다. 기본값은 중앙 서비스 계정 모드입니다. Bitbucket 에 남는 작성자를 본인 이름으로
         만들어야 하는 경우에만, 사용자가 자신의 개인 액세스 토큰을 선택적으로 등록할 수 있습니다. 등록된
         토큰은 AES-256-GCM 으로 암호화되어 저장됩니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>MCP 클라이언트는 어떻게 로그인합니까?</summary>
+      <p>
+        OAuth 를 지원하는 클라이언트라면 URL 만 등록하면 됩니다. 인증 없이 호출하면 bbmcp 가 401 과 함께
+        보호 리소스 메타데이터 주소를 알려 주고, 클라이언트는 그 정보로 Keycloak 을 찾아 PKCE 로그인을
+        수행합니다. Keycloak 의 동적 등록이 막혀 있으면 bbmcp 가 사전 등록된 공개 클라이언트 ID 를
+        대신 내려 줍니다. OAuth 를 지원하지 않는 클라이언트는 개인 API 키를 사용합니다.
+      </p>
+    </details>
+
+    <details>
+      <summary>같은 Keycloak realm 의 다른 토큰으로 들어올 수 있습니까?</summary>
+      <p>
+        없습니다. bbmcp 는 서명과 발급자, 만료에 더해 토큰의 대상(<code>aud</code>) 또는 인가된
+        당사자(<code>azp</code>)가 허용된 클라이언트인지 확인합니다. 필요하면 필수 스코프를 지정해
+        범위를 더 좁힐 수 있습니다.
       </p>
     </details>
 

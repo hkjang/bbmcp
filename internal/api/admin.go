@@ -651,6 +651,9 @@ func (s *Server) testTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "mode": "plugin"})
 
+	case "mcp-oauth":
+		s.testMCPOAuth(w, r)
+
 	case "ai":
 		reply, err := s.AI.Test(ctx)
 		if err != nil {

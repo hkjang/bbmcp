@@ -19,12 +19,15 @@ import (
 
 // Claims is the subset of an OIDC token bbmcp relies on.
 type Claims struct {
-	Subject     string
-	Username    string
-	Email       string
-	DisplayName string
-	Roles       []string
-	Raw         map[string]any
+	Subject         string
+	Username        string
+	Email           string
+	DisplayName     string
+	Roles           []string
+	Audience        []string
+	AuthorizedParty string
+	Scopes          []string
+	Raw             map[string]any
 }
 
 // OIDC lazily builds an OIDC provider from admin-managed settings and
@@ -171,21 +174,76 @@ func (o *OIDC) VerifyIDToken(ctx context.Context, raw, nonce string) (*Claims, e
 	return claimsFrom(tok, kc)
 }
 
+// ErrTokenAudience is returned for a token issued to a different client.
+var ErrTokenAudience = errors.New("이 게이트웨이를 대상으로 발급된 토큰이 아닙니다")
+
+// ErrTokenScope is returned when the required MCP scope is absent.
+var ErrTokenScope = errors.New("토큰에 필요한 스코프가 없습니다")
+
 // VerifyAccessToken validates a bearer access token presented to /mcp.
-// Keycloak access tokens carry the client in azp rather than aud, so the
-// audience check is relaxed and the authorized party is checked instead.
+//
+// Keycloak puts the issuing client in azp and only lists an audience when the
+// client has an audience mapper, so the token is accepted when either names a
+// configured client. Tokens minted for some unrelated client in the same realm
+// are rejected rather than silently trusted.
 func (o *OIDC) VerifyAccessToken(ctx context.Context, raw string) (*Claims, error) {
 	provider, _, kc, _, err := o.provide(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if !kc.MCPOAuthEnabled {
+		return nil, errors.New("MCP OAuth 가 비활성화되어 있습니다")
+	}
+
 	v := provider.Verifier(&oidclib.Config{SkipClientIDCheck: true})
 	tok, err := v.Verify(oidclib.ClientContext(ctx,
 		httpClientFor(kc.InsecureSkipTLS, 15*time.Second)), raw)
 	if err != nil {
 		return nil, fmt.Errorf("액세스 토큰 검증 실패: %w", err)
 	}
-	return claimsFrom(tok, kc)
+
+	claims, err := claimsFrom(tok, kc)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkAudience(claims, kc.MCPAudienceSet()); err != nil {
+		return nil, err
+	}
+	if want := strings.TrimSpace(kc.MCPRequiredScope); want != "" && !claims.HasScope(want) {
+		return nil, fmt.Errorf("%w: %s", ErrTokenScope, want)
+	}
+	return claims, nil
+}
+
+// checkAudience accepts a token whose aud or azp names an allowed client.
+func checkAudience(c *Claims, allowed []string) error {
+	if len(allowed) == 0 {
+		// No client is configured yet; refuse rather than accept everything.
+		return fmt.Errorf("%w: 허용 클라이언트가 설정되지 않았습니다", ErrTokenAudience)
+	}
+	for _, want := range allowed {
+		if strings.EqualFold(c.AuthorizedParty, want) {
+			return nil
+		}
+		for _, aud := range c.Audience {
+			if strings.EqualFold(aud, want) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w (azp=%s, aud=%s, 허용=%s)",
+		ErrTokenAudience, c.AuthorizedParty,
+		strings.Join(c.Audience, ","), strings.Join(allowed, ","))
+}
+
+// HasScope reports whether the token carries a scope.
+func (c *Claims) HasScope(scope string) bool {
+	for _, s := range c.Scopes {
+		if strings.EqualFold(s, scope) {
+			return true
+		}
+	}
+	return false
 }
 
 func claimsFrom(tok *oidclib.IDToken, kc settings.Keycloak) (*Claims, error) {
@@ -208,6 +266,9 @@ func claimsFrom(tok *oidclib.IDToken, kc settings.Keycloak) (*Claims, error) {
 	if c.DisplayName == "" {
 		c.DisplayName = c.Username
 	}
+	c.Audience = tok.Audience
+	c.AuthorizedParty = stringClaim(raw, "azp")
+	c.Scopes = strings.Fields(stringClaim(raw, "scope"))
 	if c.Username == "" {
 		return nil, fmt.Errorf("토큰에 %s 클레임이 없습니다", usernameClaim)
 	}

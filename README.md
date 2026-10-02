@@ -38,6 +38,7 @@ AI 에게 사용자가 볼 수 없는 저장소까지 노출합니다. bbmcp 는
 | 영역 | 내용 |
 |---|---|
 | 인증 | Keycloak OIDC, 사일런트 SSO(`prompt=none`), 로컬 계정 비상 로그인 |
+| MCP OAuth | RFC 9728 보호 리소스 메타데이터, RFC 8414 인가 서버 메타데이터 미러, RFC 7591 등록 대행, aud/azp·스코프 검증 |
 | 식별 | 최초 1회 `preferred_username` 정확 일치 → 이후 `Keycloak sub ↔ Bitbucket user.id` 고정 |
 | 권한 | Bitbucket 권한 플러그인(권장) 또는 REST 폴백, fail-closed 기본 |
 | 정책 | 프로젝트·저장소·브랜치 허용/차단, 리소스별 위험도 상한 |
@@ -52,7 +53,7 @@ AI 에게 사용자가 볼 수 없는 저장소까지 노출합니다. bbmcp 는
 
 ```bash
 # 1) 릴리스 이미지 적재
-docker load -i bbmcp-v0.1.0.tar.gz
+docker load -i bbmcp-v0.2.0.tar.gz
 
 # 2) 환경변수 (네 개뿐입니다)
 cp deploy/.env.example deploy/.env
@@ -78,6 +79,42 @@ curl -fsS http://localhost:8080/healthz
 
 ## MCP 클라이언트 연결
 
+### Keycloak OAuth (권장)
+
+OAuth 를 지원하는 MCP 클라이언트는 URL 하나면 됩니다. 연결하면 브라우저가 열리고, Keycloak 로그인
+후 토큰을 받아 옵니다.
+
+```json
+{
+  "mcpServers": {
+    "bbmcp": { "type": "http", "url": "https://bbmcp.company.local/mcp" }
+  }
+}
+```
+
+클라이언트가 거치는 경로는 다음과 같습니다.
+
+| 단계 | 요청 | bbmcp 응답 |
+|---|---|---|
+| 1 | `POST /mcp` (자격증명 없음) | `401` + `WWW-Authenticate: Bearer resource_metadata="…"` |
+| 2 | `GET /.well-known/oauth-protected-resource` | `authorization_servers: [Keycloak issuer]`, 스코프 |
+| 3 | `GET <issuer>/.well-known/openid-configuration` | Keycloak 의 authorize·token·JWKS 엔드포인트 |
+| 4 | `POST /oauth/register` (선택) | 사전 등록된 공개 클라이언트 ID (RFC 7591) |
+| 5 | PKCE 인가 코드 교환 | — (클라이언트 ↔ Keycloak 직접) |
+| 6 | `POST /mcp` + Bearer | 서명·발급자·대상·스코프 검증 후 처리 |
+
+Keycloak 에는 **공개 클라이언트**(기본값 `bbmcp-mcp`)를 하나 더 만들고 PKCE S256 과 루프백 리다이렉트
+(`http://127.0.0.1:*`)를 허용하십시오. Keycloak 의 동적 등록이 막혀 있으면 bbmcp 가 `/oauth/register`
+로 그 클라이언트 ID 를 대신 내려 줍니다. 관리 콘솔 → 인증 → **MCP OAuth 점검** 에서 현재 상태와
+빠진 설정을 확인할 수 있습니다.
+
+토큰은 서명·만료만이 아니라 **대상(aud/azp)** 까지 확인합니다. 같은 realm 의 다른 클라이언트가 받은
+토큰으로는 들어올 수 없습니다.
+
+### 개인 API 키
+
+OAuth 를 지원하지 않는 클라이언트나 CI 에서는 개인 키를 사용합니다.
+
 ```json
 {
   "mcpServers": {
@@ -89,9 +126,6 @@ curl -fsS http://localhost:8080/healthz
   }
 }
 ```
-
-Keycloak OAuth 를 쓰는 클라이언트는 `/.well-known/oauth-protected-resource` 메타데이터로 인가 서버를
-자동 발견합니다.
 
 ## MCP 도구
 

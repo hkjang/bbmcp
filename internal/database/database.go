@@ -4,11 +4,13 @@ package database
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,6 +47,13 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 		if lastErr == nil {
 			return &DB{Pool: pool}, nil
 		}
+		// Waiting helps when PostgreSQL is still starting. It never helps when
+		// the database name or the credentials are wrong, and retrying those
+		// for a minute turns a typo into an unexplained hang.
+		if fatal, reason := fatalConnectError(lastErr); fatal {
+			pool.Close()
+			return nil, fmt.Errorf("PostgreSQL 연결 실패(%s): %w", reason, lastErr)
+		}
 		select {
 		case <-ctx.Done():
 			pool.Close()
@@ -54,6 +63,26 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 	}
 	pool.Close()
 	return nil, fmt.Errorf("PostgreSQL 연결 실패: %w", lastErr)
+}
+
+// fatalConnectError reports configuration errors that retrying cannot fix.
+func fatalConnectError(err error) (bool, string) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false, ""
+	}
+	switch pgErr.Code {
+	case "3D000":
+		return true, "데이터베이스가 존재하지 않습니다"
+	case "28P01":
+		return true, "비밀번호가 올바르지 않습니다"
+	case "28000":
+		return true, "인증이 거부되었습니다"
+	case "42501":
+		return true, "권한이 부족합니다"
+	default:
+		return false, ""
+	}
 }
 
 // Close releases the pool.

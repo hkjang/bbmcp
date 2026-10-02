@@ -292,6 +292,29 @@ export interface KeycloakSettings {
   autoProvision: boolean
   insecureSkipTls: boolean
   requireRole: string
+  mcpOauthEnabled: boolean
+  mcpClientId: string
+  mcpAudiences: string[]
+  mcpScopes: string[]
+  mcpRequiredScope: string
+  mcpAllowDynamicRegistration: boolean
+}
+
+export interface MCPOAuthReport {
+  ok: boolean
+  error?: string
+  issuer?: string
+  resourceUrl: string
+  resourceMetadataUrl: string
+  authorizationServer?: Record<string, string>
+  keycloakSupportsDynamicRegistration: boolean
+  gatewayRegistrationEndpoint?: string
+  mcpClientId: string
+  acceptedAudiences: string[]
+  requiredScope?: string
+  scopes: string[]
+  warnings?: string[]
+  clientConfigExample: Record<string, unknown>
 }
 
 export interface BitbucketSettings {

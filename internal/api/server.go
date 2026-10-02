@@ -55,6 +55,7 @@ type Server struct {
 	Deps
 	limiter *httpx.RateLimiter
 	mcp     *mcp.Server
+	asMeta  asMetadataCache
 }
 
 // New builds the server and its routes.
@@ -80,8 +81,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/healthz", s.health)
 	r.Get("/readyz", s.ready)
 	r.Get("/metrics", s.metrics)
-	r.Get("/.well-known/oauth-protected-resource", s.protectedResource)
-	r.Get("/.well-known/oauth-protected-resource/mcp", s.protectedResource)
+	s.mountOAuth(r)
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Get("/oidc/start", s.oidcStart)
@@ -144,39 +144,24 @@ func (s *Server) PrincipalFor(r *http.Request) (tools.Principal, error) {
 }
 
 // Challenge implements mcp.Authenticator, pointing clients at Keycloak.
+//
+// The resource_metadata hint is what starts an MCP client's OAuth flow: it
+// reads the protected resource metadata, finds the authorization server and
+// signs the user in. When a token was presented but rejected, the reason is
+// included so the client reports something actionable instead of looping.
 func (s *Server) Challenge(r *http.Request) string {
 	ctx := r.Context()
 	cfg, _ := s.Store.MCP(ctx)
-	resource := cfg.ResourceURL
-	if resource == "" {
-		resource = baseURL(r)
+	parts := []string{
+		`resource_metadata="` + s.resourceURL(r, cfg) + `/.well-known/oauth-protected-resource"`,
 	}
-	return `Bearer resource_metadata="` + strings.TrimRight(resource, "/") +
-		`/.well-known/oauth-protected-resource"`
-}
-
-// protectedResource publishes the OAuth metadata an MCP client needs.
-func (s *Server) protectedResource(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	kc, _ := s.Store.Keycloak(ctx)
-	cfg, _ := s.Store.MCP(ctx)
-	resource := cfg.ResourceURL
-	if resource == "" {
-		resource = baseURL(r)
+	if kc, err := s.Store.Keycloak(ctx); err == nil && len(kc.MCPScopes) > 0 {
+		parts = append(parts, `scope="`+strings.Join(kc.MCPScopes, " ")+`"`)
 	}
-	servers := []string{}
-	if kc.Issuer != "" {
-		servers = append(servers, strings.TrimRight(kc.Issuer, "/"))
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		parts = append([]string{`error="invalid_token"`}, parts...)
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"resource":                              strings.TrimRight(resource, "/"),
-		"authorization_servers":                 servers,
-		"bearer_methods_supported":              []string{"header"},
-		"scopes_supported":                      []string{"openid", "profile", "email"},
-		"resource_name":                         "bbmcp",
-		"resource_documentation":                "https://hkjang.github.io/bbmcp/",
-		"authorization_details_types_supported": []string{"mcp_tool"},
-	})
+	return "Bearer " + strings.Join(parts, ", ")
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
