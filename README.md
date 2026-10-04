@@ -53,7 +53,7 @@ AI 에게 사용자가 볼 수 없는 저장소까지 노출합니다. bbmcp 는
 
 ```bash
 # 1) 릴리스 이미지 적재
-docker load -i bbmcp-v0.2.2.tar.gz
+docker load -i bbmcp-v0.2.3.tar.gz
 
 # 2) 환경변수 (네 개뿐입니다)
 cp deploy/.env.example deploy/.env
