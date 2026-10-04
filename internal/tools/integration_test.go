@@ -419,6 +419,59 @@ func TestWriteToolRequiresApprovalBoundToArguments(t *testing.T) {
 	}
 }
 
+// Caller arguments reach the approval record unfiltered, and the stored record is
+// what GET /api/admin/approvals hands back to the console. Secret-shaped names must
+// never survive the round trip through the database.
+func TestApprovalRecordRedactsSensitiveArgumentNames(t *testing.T) {
+	f := newFixture(t)
+	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+	f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+
+	secrets := map[string]string{
+		"apiKey":        "super-secret-pat",
+		"api_key":       "super-secret-pat-2",
+		"authorization": "Bearer super-secret-pat-3",
+		"credential":    "super-secret-pat-4",
+		"accessKey":     "AKIAsupersecret",
+		"bearerToken":   "super-secret-pat-5",
+		"passwd":        "super-secret-pat-6",
+		"privateKey":    "-----BEGIN PRIVATE KEY-----",
+	}
+	args := tools.Args{
+		"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": "검토 의견",
+	}
+	for k, v := range secrets {
+		args[k] = v
+	}
+
+	_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", args)
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != tools.CodeApprovalRequired {
+		t.Fatalf("expected APPROVAL_REQUIRED, got %v", err)
+	}
+	if te.Approval == nil {
+		t.Fatal("no approval request was returned")
+	}
+
+	// Read the record back out of the database, the way listApprovals does.
+	rec, err := f.approvals.ByID(f.ctx, te.Approval.ID)
+	if err != nil {
+		t.Fatalf("ByID: %v", err)
+	}
+	for k := range secrets {
+		if got := rec.Arguments[k]; got != "[redacted]" {
+			t.Errorf("Arguments[%q] = %v, want \"[redacted]\"", k, got)
+		}
+	}
+	// Ordinary arguments stay readable so an approver can see what they approve.
+	if got := rec.Arguments["project"]; got != "AI" {
+		t.Errorf("Arguments[\"project\"] = %v, want \"AI\"", got)
+	}
+	if got := rec.Arguments["text"]; got != "검토 의견" {
+		t.Errorf("Arguments[\"text\"] = %v, want the original comment", got)
+	}
+}
+
 func TestApprovalGoesStaleWhenArgumentsChange(t *testing.T) {
 	f := newFixture(t)
 	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"

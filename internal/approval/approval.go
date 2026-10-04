@@ -254,13 +254,25 @@ func (e *Engine) ExpireStale(ctx context.Context) error {
 	return err
 }
 
+// sensitiveKeyParts are matched as substrings against the lowercased argument name.
+// Each entry must stay specific enough not to swallow a real tool argument: bare
+// "key"/"auth"/"pat" would hide "projectKey", "authMode" and "path", so the
+// qualified forms are listed instead. Unlike audit.redactKeys this list covers only
+// credential-shaped names — an approver has to read "diff", "content" and "text" to
+// know what they are approving, and oversized values are truncated below instead.
+var sensitiveKeyParts = []string{
+	"token", "secret", "password", "passwd",
+	"credential", "authorization", "bearer",
+	"apikey", "api_key", "accesskey", "access_key",
+	"privatekey", "private_key",
+}
+
 // redactArgs strips large or sensitive argument values before storage.
 func redactArgs(args map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range args {
 		lk := strings.ToLower(k)
-		if strings.Contains(lk, "token") || strings.Contains(lk, "secret") ||
-			strings.Contains(lk, "password") {
+		if containsAny(lk, sensitiveKeyParts) {
 			out[k] = "[redacted]"
 			continue
 		}
@@ -271,4 +283,13 @@ func redactArgs(args map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func containsAny(s string, parts []string) bool {
+	for _, p := range parts {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
