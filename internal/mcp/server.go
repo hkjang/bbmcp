@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -314,7 +315,7 @@ func (s *Server) callTool(ctx context.Context, r *http.Request, req *Request) *R
 		limit = 512
 	}
 	if len(text) > limit*1024 {
-		trimmed := string(text[:limit*1024])
+		trimmed := trimToRune(text[:limit*1024])
 		return ok(req.ID, CallResult{
 			Content: []ContentBlock{{Type: "text", Text: trimmed +
 				fmt.Sprintf("\n\n… 응답이 %dKB 제한으로 잘렸습니다. 페이징 인자(start/limit)를 사용하십시오.", limit)}},
@@ -325,6 +326,20 @@ func (s *Server) callTool(ctx context.Context, r *http.Request, req *Request) *R
 		Content:           []ContentBlock{{Type: "text", Text: string(text)}},
 		StructuredContent: result,
 	})
+}
+
+// trimToRune drops a trailing partial UTF-8 sequence left behind by cutting at
+// a byte offset. Without it the KB cap splits a multi-byte character — the
+// common case for Korean repository text — and json.Marshal replaces the
+// broken bytes with U+FFFD, handing the client a corrupted last character.
+func trimToRune(b []byte) string {
+	for len(b) > 0 {
+		if r, size := utf8.DecodeLastRune(b); r != utf8.RuneError || size > 1 {
+			break
+		}
+		b = b[:len(b)-1]
+	}
+	return string(b)
 }
 
 func (s *Server) unauthorized(w http.ResponseWriter, r *http.Request, err error) {
