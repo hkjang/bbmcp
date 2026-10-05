@@ -123,6 +123,7 @@ type gateway struct {
 	srv   *httptest.Server
 	store *settings.Store
 	pool  *pgxpool.Pool
+	bb    *bitbucketStub
 	ctx   context.Context
 }
 
@@ -222,12 +223,21 @@ func newGateway(t *testing.T, kc *keycloakStub) *gateway {
 	if err := store.Put(ctx, settings.KeyMCP, mcpCfg, "test"); err != nil {
 		t.Fatalf("mcp settings: %v", err)
 	}
-	return &gateway{srv: srv, store: store, pool: db.Pool, ctx: ctx}
+	return &gateway{srv: srv, store: store, pool: db.Pool, bb: bbStub, ctx: ctx}
 }
 
-// newBitbucketStub answers the handful of calls this flow makes.
-func newBitbucketStub(t *testing.T) *httptest.Server {
+// bitbucketStub answers the handful of calls these flows make. projects is
+// mutable so a test can decide what /projects returns; everything else stays
+// unhandled on purpose, which is what Bitbucket 6.9.1 looks like to the
+// permission resolver when the service account cannot read a grant table.
+type bitbucketStub struct {
+	*httptest.Server
+	projects []map[string]any
+}
+
+func newBitbucketStub(t *testing.T) *bitbucketStub {
 	t.Helper()
+	stub := &bitbucketStub{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rest/api/1.0/users", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("filter") == "hkjang" {
@@ -239,12 +249,32 @@ func newBitbucketStub(t *testing.T) *httptest.Server {
 		}
 		writeJSON(w, map[string]any{"size": 0, "isLastPage": true, "values": []any{}})
 	})
+	mux.HandleFunc("/rest/api/1.0/projects", func(w http.ResponseWriter, r *http.Request) {
+		values := make([]any, 0, len(stub.projects))
+		for _, p := range stub.projects {
+			values = append(values, p)
+		}
+		writeJSON(w, map[string]any{"size": len(values), "limit": 25,
+			"isLastPage": true, "values": values})
+	})
+	// Only /projects/{key} is served here; /projects/{key}/permissions/... must
+	// fall through to the 404 below so the resolver takes its forbidden path.
+	mux.HandleFunc("/rest/api/1.0/projects/", func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/rest/api/1.0/projects/")
+		for _, p := range stub.projects {
+			if p["key"] == key {
+				writeJSON(w, p)
+				return
+			}
+		}
+		http.Error(w, `{"errors":[{"message":"unhandled"}]}`, http.StatusNotFound)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"errors":[{"message":"unhandled"}]}`, http.StatusNotFound)
 	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
+	stub.Server = httptest.NewServer(mux)
+	t.Cleanup(stub.Close)
+	return stub
 }
 
 func (g *gateway) post(t *testing.T, path, bearer, body string) (*http.Response, map[string]any) {
@@ -534,6 +564,69 @@ func TestMCPSessionIDNotIssuedWithoutAuth(t *testing.T) {
 	if n != 0 {
 		t.Errorf("인증 실패인데 mcp_sessions 행이 %d 개 생겼습니다", n)
 	}
+}
+
+// TestMCPResponseTruncationKeepsValidUTF8 pins the KB cap in callTool: the
+// response body is cut to a byte offset, so with non-ASCII content — which is
+// the normal case for this product, Korean repository text — the cut lands in
+// the middle of a 3-byte rune two times out of three. json.Marshal then swaps
+// the broken bytes for U+FFFD and the client is handed a corrupted last
+// character. The three paddings below shift the Korean run by one byte each,
+// covering every residue mod 3, so at least two of them cut mid-rune.
+func TestMCPResponseTruncationKeepsValidUTF8(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+	token := kc.token(t, nil)
+
+	// A 1KB cap with a 6KB project description guarantees the cut.
+	mcpCfg, err := gw.store.MCP(gw.ctx)
+	if err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	mcpCfg.MaxResponseKB = 1
+	if err := gw.store.Put(gw.ctx, settings.KeyMCP, mcpCfg, "test"); err != nil {
+		t.Fatalf("mcp settings: %v", err)
+	}
+
+	for _, pad := range []string{"", "A", "AA"} {
+		// Public so the REST resolver grants read without any grant table.
+		gw.bb.projects = []map[string]any{{
+			"id": 1, "key": "AI", "name": "AI", "type": "NORMAL", "public": true,
+			"description": pad + strings.Repeat("한", 2000),
+		}}
+
+		_, out := gw.post(t, "/mcp", token,
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bitbucket_projects","arguments":{}}}`)
+		result, _ := out["result"].(map[string]any)
+		structured, _ := result["structuredContent"].(map[string]any)
+		if structured["truncated"] != true {
+			t.Fatalf("pad %dB: 절단이 일어나지 않았습니다 — 테스트 전제가 깨졌습니다: %v",
+				len(pad), out)
+		}
+		content, _ := result["content"].([]any)
+		if len(content) == 0 {
+			t.Fatalf("pad %dB: content 가 비어 있습니다: %v", len(pad), out)
+		}
+		block, _ := content[0].(map[string]any)
+		text, _ := block["text"].(string)
+
+		// The source data holds no U+FFFD, so any replacement character in the
+		// response was manufactured by cutting a rune in half.
+		if i := strings.IndexRune(text, '�'); i >= 0 {
+			t.Errorf("pad %dB: 절단된 응답 %d번째 바이트에 U+FFFD 가 있습니다 — 문자 중간에서 잘렸습니다 (…%q…)",
+				len(pad), i, text[max(0, i-12):min(len(text), i+12)])
+		}
+		if !strings.Contains(text, "1KB 제한으로 잘렸습니다") {
+			t.Errorf("pad %dB: 절단 안내 문구가 없습니다: …%q", len(pad), tail(text, 80))
+		}
+	}
+}
+
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 func TestMCPOAuthRejectsTokenFromAnotherClient(t *testing.T) {
