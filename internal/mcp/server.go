@@ -112,7 +112,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 		out := []*Response{}
 		for i := range batch {
-			if resp := s.dispatch(r, &batch[i]); resp != nil {
+			if resp := s.dispatch(w, r, &batch[i]); resp != nil {
 				out = append(out, resp)
 			}
 		}
@@ -129,7 +129,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, fail(nil, CodeParseError, "JSON 파싱 실패", nil))
 		return
 	}
-	resp := s.dispatch(r, &req)
+	resp := s.dispatch(w, r, &req)
 	if resp == nil {
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -142,13 +142,15 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// dispatch routes one JSON-RPC message.
-func (s *Server) dispatch(r *http.Request, req *Request) *Response {
+// dispatch routes one JSON-RPC message. w is only used to publish the session
+// id on initialize; every caller writes the response body afterwards, so
+// setting a header here is still ahead of WriteHeader.
+func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req *Request) *Response {
 	ctx := r.Context()
 
 	switch req.Method {
 	case "initialize":
-		return s.initialize(ctx, r, req)
+		return s.initialize(ctx, w, r, req)
 	case "notifications/initialized", "notifications/cancelled":
 		return nil
 	case "ping":
@@ -169,7 +171,7 @@ func (s *Server) dispatch(r *http.Request, req *Request) *Response {
 	}
 }
 
-func (s *Server) initialize(ctx context.Context, r *http.Request, req *Request) *Response {
+func (s *Server) initialize(ctx context.Context, w http.ResponseWriter, r *http.Request, req *Request) *Response {
 	principal, err := s.auth.PrincipalFor(r)
 	if err != nil {
 		return fail(req.ID, CodeInvalidRequest, "인증이 필요합니다: "+err.Error(), nil)
@@ -185,6 +187,11 @@ func (s *Server) initialize(ctx context.Context, r *http.Request, req *Request) 
 
 	client := strings.TrimSpace(params.ClientInfo.Name + " " + params.ClientInfo.Version)
 	sessionID := s.openSession(ctx, principal, client, r)
+	// The client has no other way to learn the id, and touchSession /
+	// closeSession only ever read it back from this header.
+	if sessionID != "" {
+		w.Header().Set(SessionHeader, sessionID)
+	}
 
 	cfg, _ := s.store.MCP(ctx)
 	name := cfg.ServerName

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hkjang/bbmcp/internal/aiproxy"
 	"github.com/hkjang/bbmcp/internal/api"
@@ -121,6 +122,7 @@ func writeJSON(w http.ResponseWriter, body any) {
 type gateway struct {
 	srv   *httptest.Server
 	store *settings.Store
+	pool  *pgxpool.Pool
 	ctx   context.Context
 }
 
@@ -220,7 +222,7 @@ func newGateway(t *testing.T, kc *keycloakStub) *gateway {
 	if err := store.Put(ctx, settings.KeyMCP, mcpCfg, "test"); err != nil {
 		t.Fatalf("mcp settings: %v", err)
 	}
-	return &gateway{srv: srv, store: store, ctx: ctx}
+	return &gateway{srv: srv, store: store, pool: db.Pool, ctx: ctx}
 }
 
 // newBitbucketStub answers the handful of calls this flow makes.
@@ -254,6 +256,31 @@ func (g *gateway) post(t *testing.T, path, bearer, body string) (*http.Response,
 	req.Header.Set("Content-Type", "application/json")
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := g.srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp, out
+}
+
+// send is post with arbitrary extra headers and an arbitrary method, for the
+// cases that need to echo Mcp-Session-Id back at the gateway.
+func (g *gateway) send(t *testing.T, method, path, bearer, body string, hdr map[string]string) (*http.Response, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(method, g.srv.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
 	}
 	resp, err := g.srv.Client().Do(req)
 	if err != nil {
@@ -411,6 +438,101 @@ func TestMCPOAuthDiscoveryAndCall(t *testing.T) {
 		if ann["risk"] != "READ" {
 			t.Fatalf("조회 역할에게 %v 도구가 노출되었습니다", tool["name"])
 		}
+	}
+}
+
+// TestMCPSessionIDIsIssuedAndTracked pins the whole session lifecycle: the
+// initialize response has to hand the client the session id it just recorded,
+// because touchSession/closeSession read that id back out of the request
+// header. Without the header the admin console's active-session metric is
+// wrong in both directions — live sessions age out of it after an hour while
+// finished ones stay open forever.
+func TestMCPSessionIDIsIssuedAndTracked(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+	token := kc.token(t, nil)
+
+	// 1. initialize issues the session id in the response header.
+	resp, out := gw.post(t, "/mcp", token,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"test","version":"1"}}}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initialize 상태 %d: %v", resp.StatusCode, out)
+	}
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		t.Fatalf("initialize 응답에 Mcp-Session-Id 헤더가 없습니다 (헤더: %v)", resp.Header)
+	}
+
+	// It must be the row openSession just inserted, and the same id the
+	// instructions text advertises.
+	var rowID string
+	var createdAt, lastSeenAt time.Time
+	var closedAt *time.Time
+	if err := gw.pool.QueryRow(gw.ctx,
+		`SELECT id, created_at, last_seen_at, closed_at FROM mcp_sessions`).
+		Scan(&rowID, &createdAt, &lastSeenAt, &closedAt); err != nil {
+		t.Fatalf("mcp_sessions 조회: %v", err)
+	}
+	if rowID != sessionID {
+		t.Fatalf("헤더 세션 id = %q, mcp_sessions 행 = %q", sessionID, rowID)
+	}
+	result, _ := out["result"].(map[string]any)
+	instructions, _ := result["instructions"].(string)
+	if !strings.Contains(instructions, sessionID) {
+		t.Errorf("지시문에 세션 id %q 가 없습니다: %q", sessionID, instructions)
+	}
+
+	// 2. Echoing the header back makes touchSession actually run.
+	hdr := map[string]string{"Mcp-Session-Id": sessionID}
+	resp, out = gw.send(t, http.MethodPost, "/mcp", token,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, hdr)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tools/list 상태 %d: %v", resp.StatusCode, out)
+	}
+	if err := gw.pool.QueryRow(gw.ctx,
+		`SELECT last_seen_at FROM mcp_sessions WHERE id=$1`, sessionID).Scan(&lastSeenAt); err != nil {
+		t.Fatalf("last_seen_at 조회: %v", err)
+	}
+	if !lastSeenAt.After(createdAt) {
+		t.Errorf("last_seen_at (%s) 이 created_at (%s) 보다 커야 합니다 — touchSession 이 돌지 않았습니다",
+			lastSeenAt, createdAt)
+	}
+
+	// 3. DELETE with the same header closes the session.
+	resp, _ = gw.send(t, http.MethodDelete, "/mcp", token, "", hdr)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /mcp 상태 %d, 204 이어야 합니다", resp.StatusCode)
+	}
+	if err := gw.pool.QueryRow(gw.ctx,
+		`SELECT closed_at FROM mcp_sessions WHERE id=$1`, sessionID).Scan(&closedAt); err != nil {
+		t.Fatalf("closed_at 조회: %v", err)
+	}
+	if closedAt == nil {
+		t.Errorf("closed_at 이 NULL 입니다 — closeSession 이 돌지 않았습니다")
+	}
+}
+
+// TestMCPSessionIDNotIssuedWithoutAuth proves the session id is minted after
+// authentication, not before: a refused initialize must neither carry the
+// header nor leave a row behind.
+func TestMCPSessionIDNotIssuedWithoutAuth(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+
+	resp, _ := gw.post(t, "/mcp", "",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"test","version":"1"}}}`)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("상태 코드 %d, 401 이어야 합니다", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Mcp-Session-Id"); got != "" {
+		t.Errorf("인증 실패 응답에 Mcp-Session-Id = %q 가 붙었습니다", got)
+	}
+	var n int
+	if err := gw.pool.QueryRow(gw.ctx, `SELECT count(*) FROM mcp_sessions`).Scan(&n); err != nil {
+		t.Fatalf("mcp_sessions 조회: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("인증 실패인데 mcp_sessions 행이 %d 개 생겼습니다", n)
 	}
 }
 
