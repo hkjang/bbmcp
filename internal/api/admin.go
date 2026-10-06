@@ -708,7 +708,8 @@ func (s *Server) testTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		if kc.PostLogoutURL == "" {
 			warnings = append(warnings, "로그아웃 후 이동 URL 이 비어 있어 로그아웃 시 Keycloak 화면에 머무릅니다. "+
-				"앱으로 돌아오게 하려면 값을 넣고 Keycloak 의 Valid post logout redirect URIs 에도 같은 값을 등록하십시오.")
+				"앱으로 돌아오게 하려면 값을 넣고 Keycloak 의 Valid post logout redirect URIs 에도 같은 값을 등록하십시오. "+
+				"이 항목이 없는 구버전 Keycloak(예: 10)은 Valid Redirect URIs 로 검사하므로 그쪽에 등록하십시오.")
 		}
 
 		cfg, _, err := s.Auth.OIDC.OAuth2Config(ctx, redirect)

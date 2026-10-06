@@ -35,7 +35,8 @@ const loginFields: Field<KeycloakSettings>[] = [
     kind: 'text',
     key: 'issuer',
     label: 'Issuer URL',
-    description: 'realm 까지 포함합니다. 예: https://sso.company.local/realms/company',
+    description:
+      'realm 까지 포함합니다. 예: https://sso.company.local/realms/company (구버전 WildFly 배포판, 예: Keycloak 10 은 https://sso.company.local/auth/realms/company)',
     placeholder: 'https://sso.company.local/realms/company',
     span: 12,
   },
@@ -54,7 +55,7 @@ const loginFields: Field<KeycloakSettings>[] = [
     key: 'postLogoutUrl',
     label: '로그아웃 후 이동 URL',
     description:
-      '비워 두면 로그아웃 시 이 값을 보내지 않습니다(오류 없음). 값을 넣으면 Keycloak 의 Valid post logout redirect URIs 에도 같은 값을 등록해야 합니다.',
+      '비워 두면 로그아웃 시 이 값을 보내지 않습니다(오류 없음). 값을 넣으면 Keycloak 의 Valid post logout redirect URIs 에도 같은 값을 등록해야 합니다. 그 항목이 없는 구버전(예: Keycloak 10)은 Valid Redirect URIs 에 등록합니다.',
     placeholder: 'https://bbmcp.company.local',
     span: 12,
   },
@@ -263,7 +264,8 @@ export function AdminAuthPage() {
                 <Table.Td>
                   <strong>On</strong>
                   <Text size="xs" c="dimmed" mt={4}>
-                    MCP 클라이언트에는 bbmcp 가 인가 서버로 알려지므로 Keycloak 의 issuer 를 붙이지 않습니다.
+                    MCP 클라이언트에는 bbmcp 가 인가 서버로 알려지므로 Keycloak 의 issuer 를 붙이지 않습니다. 이
+                    옵션이 없는 구버전(예: Keycloak 10)은 issuer 를 붙이지 않으므로 할 일이 없습니다.
                   </Text>
                 </Table.Td>
               </Table.Tr>
@@ -353,7 +355,10 @@ function KeycloakReport({ report }: { report: KeycloakTestReport }) {
           </div>
           <div>
             <Text size="sm" fw={600} mb={4}>
-              Valid post logout redirect URIs
+              Valid post logout redirect URIs{' '}
+              <Text span size="xs" c="dimmed" fw={400}>
+                (이 항목이 없는 구버전 Keycloak 은 Valid Redirect URIs)
+              </Text>
             </Text>
             {report.register.validPostLogoutRedirectUris.length > 0 ? (
               report.register.validPostLogoutRedirectUris.map((uri) => <CopyField key={uri} value={uri} />)
@@ -445,7 +450,7 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
               ))}
             </Stack>
           ) : null}
-          {report.gatewayRegistrationEndpoint ? (
+          {report.gatewayRegistrationEndpoint && report.redirectChecks?.some((check) => check.sendsIssuer) ? (
             <Text size="sm" mt="md">
               같은 클라이언트의 Advanced 탭에서 <Code>Exclude Issuer From Authentication Response</Code> 를
               켜십시오. 클라이언트에는 이 게이트웨이가 인가 서버로 알려지므로, Keycloak 이 로그인 응답에

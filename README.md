@@ -37,7 +37,7 @@ AI 에게 사용자가 볼 수 없는 저장소까지 노출합니다. bbmcp 는
 
 | 영역 | 내용 |
 |---|---|
-| 인증 | Keycloak OIDC, 사일런트 SSO(`prompt=none`), 로컬 계정 비상 로그인 |
+| 인증 | Keycloak OIDC (10 이상, 10.0.2·26.4 에서 실제 로그인으로 검증), 사일런트 SSO(`prompt=none`), 로컬 계정 비상 로그인 |
 | MCP OAuth | RFC 9728 보호 리소스 메타데이터, RFC 8414 인가 서버 메타데이터 미러, RFC 7591 등록 대행, aud/azp·스코프 검증 |
 | 식별 | 최초 1회 `preferred_username` 정확 일치 → 이후 `Keycloak sub ↔ Bitbucket user.id` 고정 |
 | 권한 | Bitbucket 권한 플러그인(권장) 또는 REST 폴백, fail-closed 기본 |
@@ -105,7 +105,7 @@ OAuth 를 지원하는 MCP 클라이언트는 URL 하나면 됩니다. 연결하
 
 Keycloak 에는 **공개 클라이언트**(기본값 `bbmcp-mcp`)를 하나 더 만들고 PKCE S256 과 루프백 리다이렉트
 `http://127.0.0.1:*`, `http://localhost:*` 를 **둘 다** 허용한 뒤 (Claude Code 는 `localhost` 로 콜백을 받습니다), Advanced 탭의 **Exclude Issuer From Authentication Response** 를
-켜십시오. bbmcp 는 클라이언트에 자기 자신을 인가 서버로 알리고 `/oauth/register` 로 그 클라이언트 ID 를
+켜십시오. 이 옵션이 없는 구버전(예: Keycloak 10)은 로그인 응답에 issuer 를 붙이지 않으므로 할 일이 없습니다. bbmcp 는 클라이언트에 자기 자신을 인가 서버로 알리고 `/oauth/register` 로 그 클라이언트 ID 를
 내려 줍니다. 로그인과 토큰 발급은 그대로 Keycloak 이 합니다. 클라이언트를 Keycloak 의 익명 동적 등록으로
 보내지 않으므로 `invalid_client_metadata`·Trusted Hosts 거부가 생기지 않습니다. 등록할 때 bbmcp 가 Keycloak 에
 클라이언트의 리다이렉트 URI 를 실제로 확인하므로, 빠진 값이 있으면 브라우저의 `Invalid parameter: redirect_uri`

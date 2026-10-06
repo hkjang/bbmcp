@@ -161,6 +161,11 @@ func (s *Server) authorizationServerMetadata(w http.ResponseWriter, r *http.Requ
 		// A client that can use a metadata document URL as its client_id would
 		// skip registration and reach Keycloak as a client this gateway rejects.
 		delete(out, "client_id_metadata_document_supported")
+		// The client handed out here is public. Older Keycloak (10, for one)
+		// accepts public clients at its token endpoint but does not list
+		// "none", and a client choosing from this list would then pick a
+		// method that needs a secret it was never given.
+		out["token_endpoint_auth_methods_supported"] = withNone(body["token_endpoint_auth_methods_supported"])
 	}
 	httpx.JSON(w, http.StatusOK, out)
 }
@@ -222,6 +227,23 @@ func (s *Server) fetchASMetadata(ctx context.Context, kc settings.Keycloak) (map
 		lastErr = errors.New("알 수 없는 오류")
 	}
 	return nil, fmt.Errorf("Keycloak 메타데이터를 가져올 수 없습니다: %w", lastErr)
+}
+
+// withNone returns a token_endpoint_auth_methods_supported list that
+// includes "none", keeping the methods Keycloak listed.
+func withNone(listed any) []string {
+	out := []string{}
+	if items, ok := listed.([]any); ok {
+		for _, item := range items {
+			if method, ok := item.(string); ok {
+				out = append(out, method)
+			}
+		}
+	}
+	if !containsFold(out, "none") {
+		out = append(out, "none")
+	}
+	return out
 }
 
 // keycloakHTTPClient is the client bbmcp uses for its own calls to Keycloak.

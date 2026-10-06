@@ -724,3 +724,103 @@ func TestKeycloakMessageReadsErrorPage(t *testing.T) {
 		t.Errorf("keycloakMessage = %q", got)
 	}
 }
+
+// fakeKeycloak10 answers the way Keycloak 10 (WildFly) does: the realm lives
+// under /auth, only the OpenID Connect discovery path is served,
+// token_endpoint_auth_methods_supported leaves out "none", and the
+// authorization response carries no iss.
+func fakeKeycloak10(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	var issuer string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/realms/bb/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer,
+			"authorization_endpoint":                issuer + "/protocol/openid-connect/auth",
+			"token_endpoint":                        issuer + "/protocol/openid-connect/token",
+			"jwks_uri":                              issuer + "/protocol/openid-connect/certs",
+			"registration_endpoint":                 issuer + "/clients-registrations/openid-connect",
+			"end_session_endpoint":                  issuer + "/protocol/openid-connect/logout",
+			"code_challenge_methods_supported":      []string{"plain", "S256"},
+			"response_types_supported":              []string{"code", "none", "id_token"},
+			"token_endpoint_auth_methods_supported": []string{"private_key_jwt", "client_secret_basic", "client_secret_post", "tls_client_auth", "client_secret_jwt"},
+		})
+	})
+	mux.HandleFunc("/auth/realms/bb/protocol/openid-connect/auth", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		http.Redirect(w, r, q.Get("redirect_uri")+"?error=login_required&state="+url.QueryEscape(q.Get("state")), http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	issuer = srv.URL + "/auth/realms/bb"
+	return srv, issuer
+}
+
+func TestKeycloak10MetadataIsMirroredForThePublicClient(t *testing.T) {
+	for _, proxy := range []bool{true, false} {
+		srv, store, ctx := newOAuthServer(t)
+		_, issuer := fakeKeycloak10(t)
+		configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) {
+			kc.Issuer = issuer
+			kc.MCPAllowDCR = proxy
+		})
+
+		rec := httptest.NewRecorder()
+		srv.authorizationServerMetadata(rec,
+			httptest.NewRequest(http.MethodGet, "https://bbmcp.local/.well-known/oauth-authorization-server", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("proxy=%t: 상태 %d: %s", proxy, rec.Code, rec.Body.String())
+		}
+		body := decode(t, rec)
+		if body["authorization_endpoint"] != issuer+"/protocol/openid-connect/auth" {
+			t.Errorf("proxy=%t: authorization_endpoint = %v", proxy, body["authorization_endpoint"])
+		}
+		methods := []string{}
+		for _, m := range body["token_endpoint_auth_methods_supported"].([]any) {
+			methods = append(methods, m.(string))
+		}
+		if proxy {
+			// The gateway hands out a public client, so "none" has to be listed,
+			// and Keycloak's own methods are kept.
+			if !containsFold(methods, "none") || !containsFold(methods, "client_secret_basic") {
+				t.Errorf("token_endpoint_auth_methods_supported = %v", methods)
+			}
+			if body["issuer"] != "https://bbmcp.local" {
+				t.Errorf("issuer = %v", body["issuer"])
+			}
+		} else if containsFold(methods, "none") || body["issuer"] != issuer {
+			t.Errorf("Keycloak 을 그대로 광고할 때는 바꾸지 않아야 합니다: issuer=%v methods=%v", body["issuer"], methods)
+		}
+	}
+}
+
+func TestMCPOAuthDiagnosticOnKeycloak10(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	_, issuer := fakeKeycloak10(t)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) { kc.Issuer = issuer })
+
+	rec := httptest.NewRecorder()
+	srv.testMCPOAuth(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/api/admin/test/mcp-oauth", nil))
+	body := decode(t, rec)
+	if body["ok"] != true {
+		t.Fatalf("ok = %v (%s)", body["ok"], rec.Body.String())
+	}
+	for _, c := range body["redirectChecks"].([]any) {
+		check := c.(map[string]any)
+		if check["accepted"] != true || check["sendsIssuer"] == true {
+			t.Errorf("redirectCheck = %v", check)
+		}
+	}
+	// Keycloak 10 has no "Exclude Issuer" option and needs none.
+	if warnings, _ := body["warnings"].([]any); len(warnings) != 0 {
+		t.Errorf("warnings = %v", warnings)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.registerClient(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/oauth/register",
+		jsonBody(`{"redirect_uris":["http://localhost:58023/callback"]}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("등록 상태 %d (%s)", rec.Code, rec.Body.String())
+	}
+}
