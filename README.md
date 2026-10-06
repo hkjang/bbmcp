@@ -97,16 +97,18 @@ OAuth 를 지원하는 MCP 클라이언트는 URL 하나면 됩니다. 연결하
 | 단계 | 요청 | bbmcp 응답 |
 |---|---|---|
 | 1 | `POST /mcp` (자격증명 없음) | `401` + `WWW-Authenticate: Bearer resource_metadata="…"` |
-| 2 | `GET /.well-known/oauth-protected-resource` | `authorization_servers: [Keycloak issuer]`, 스코프 |
-| 3 | `GET <issuer>/.well-known/openid-configuration` | Keycloak 의 authorize·token·JWKS 엔드포인트 |
-| 4 | `POST /oauth/register` (선택) | 사전 등록된 공개 클라이언트 ID (RFC 7591) |
+| 2 | `GET /.well-known/oauth-protected-resource` | `authorization_servers: [bbmcp]`, 스코프 |
+| 3 | `GET /.well-known/oauth-authorization-server` | Keycloak 의 authorize·token·JWKS 엔드포인트 + bbmcp 의 등록 엔드포인트 |
+| 4 | `POST /oauth/register` | 사전 등록된 공개 클라이언트 ID (RFC 7591) |
 | 5 | PKCE 인가 코드 교환 | — (클라이언트 ↔ Keycloak 직접) |
 | 6 | `POST /mcp` + Bearer | 서명·발급자·대상·스코프 검증 후 처리 |
 
 Keycloak 에는 **공개 클라이언트**(기본값 `bbmcp-mcp`)를 하나 더 만들고 PKCE S256 과 루프백 리다이렉트
-(`http://127.0.0.1:*`)를 허용하십시오. Keycloak 의 동적 등록이 막혀 있으면 bbmcp 가 `/oauth/register`
-로 그 클라이언트 ID 를 대신 내려 줍니다. 관리 콘솔 → 인증 → **MCP OAuth 점검** 에서 현재 상태와
-빠진 설정을 확인할 수 있습니다.
+(`http://127.0.0.1:*`)를 허용한 뒤, Advanced 탭의 **Exclude Issuer From Authentication Response** 를
+켜십시오. bbmcp 는 클라이언트에 자기 자신을 인가 서버로 알리고 `/oauth/register` 로 그 클라이언트 ID 를
+내려 줍니다. 로그인과 토큰 발급은 그대로 Keycloak 이 합니다. 클라이언트를 Keycloak 의 익명 동적 등록으로
+보내지 않으므로 `invalid_client_metadata`·Trusted Hosts 거부가 생기지 않습니다. 관리 콘솔 → 인증 →
+**MCP OAuth 점검** 에서 현재 상태와 빠진 설정을 확인할 수 있습니다.
 
 토큰은 서명·만료만이 아니라 **대상(aud/azp)** 까지 확인합니다. 같은 realm 의 다른 클라이언트가 받은
 토큰으로는 들어올 수 없습니다.

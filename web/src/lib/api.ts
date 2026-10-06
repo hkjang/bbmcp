@@ -326,6 +326,7 @@ export interface MCPOAuthReport {
   resourceUrl: string
   resourceMetadataUrl: string
   authorizationServer?: Record<string, string>
+  advertisedAuthorizationServer?: string
   keycloakSupportsDynamicRegistration: boolean
   gatewayRegistrationEndpoint?: string
   mcpClientId: string

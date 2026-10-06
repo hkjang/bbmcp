@@ -95,7 +95,8 @@ const mcpFields: Field<KeycloakSettings>[] = [
     kind: 'switch',
     key: 'mcpAllowDynamicRegistration',
     label: '게이트웨이 동적 등록 대행',
-    description: 'Keycloak 의 동적 등록이 막혀 있어도 아래 클라이언트 ID 를 내려 줍니다.',
+    description:
+      'MCP 클라이언트에 이 게이트웨이를 인가 서버로 알려 아래 클라이언트 ID 를 내려 줍니다. 끄면 클라이언트가 Keycloak 익명 동적 등록으로 갑니다.',
   },
   {
     kind: 'text',
@@ -250,6 +251,16 @@ export function AdminAuthPage() {
                 <Table.Td><Code>{origin}</Code></Table.Td>
                 <Table.Td><Code>+</Code> 또는 비움</Table.Td>
               </Table.Tr>
+              <Table.Tr>
+                <Table.Td>Exclude Issuer From Authentication Response (Advanced)</Table.Td>
+                <Table.Td>Off</Table.Td>
+                <Table.Td>
+                  <strong>On</strong>
+                  <Text size="xs" c="dimmed" mt={4}>
+                    MCP 클라이언트에는 bbmcp 가 인가 서버로 알려지므로 Keycloak 의 issuer 를 붙이지 않습니다.
+                  </Text>
+                </Table.Td>
+              </Table.Tr>
             </Table.Tbody>
           </Table>
         </TableScroll>
@@ -384,7 +395,8 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
       <StatList
         items={[
           { label: '리소스 URL', value: report.resourceUrl },
-          { label: 'Issuer', value: report.issuer || '—' },
+          { label: '클라이언트에 알리는 인가 서버', value: report.advertisedAuthorizationServer || '—' },
+          { label: 'Keycloak Issuer', value: report.issuer || '—' },
           { label: '인가 엔드포인트', value: as.authorizationEndpoint || '—' },
           { label: '토큰 엔드포인트', value: as.tokenEndpoint || '—' },
           { label: 'JWKS', value: as.jwksUri || '—' },
@@ -405,7 +417,7 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
       <CopyField value={report.resourceMetadataUrl} />
 
       {report.loopbackRedirectUris?.length ? (
-        <Alert variant="light" color="bbblue" mt="lg" title="MCP 공개 클라이언트에 등록할 리다이렉트 URI">
+        <Alert variant="light" color="bbblue" mt="lg" title="MCP 공개 클라이언트에 할 설정">
           <Text size="sm" mb="sm">
             MCP 클라이언트는 매번 다른 루프백 포트로 콜백을 받습니다. 아래 와일드카드를 Keycloak 공개
             클라이언트의 Valid redirect URIs 에 넣지 않으면 로그인 창에서
@@ -416,6 +428,13 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
               <CopyField key={uri} value={uri} />
             ))}
           </Stack>
+          {report.gatewayRegistrationEndpoint ? (
+            <Text size="sm" mt="md">
+              같은 클라이언트의 Advanced 탭에서 <Code>Exclude Issuer From Authentication Response</Code> 를
+              켜십시오. 클라이언트에는 이 게이트웨이가 인가 서버로 알려지므로, Keycloak 이 로그인 응답에
+              자기 issuer 를 붙이면 이를 검사하는 클라이언트(Python MCP SDK 등)가 로그인을 거부합니다.
+            </Text>
+          ) : null}
         </Alert>
       ) : null}
 

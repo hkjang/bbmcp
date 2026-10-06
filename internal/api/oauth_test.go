@@ -30,6 +30,9 @@ func fakeKeycloak(t *testing.T, withDCR bool) *httptest.Server {
 			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 			"response_types_supported":              []string{"code"},
 			"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post"},
+			// Keycloak advertises RFC 9207, and CIMD when that feature is on.
+			"authorization_response_iss_parameter_supported": true,
+			"client_id_metadata_document_supported":          true,
 		}
 		if withDCR {
 			body["registration_endpoint"] = srv.URL + "/clients-registrations/openid-connect"
@@ -106,7 +109,12 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
-func TestProtectedResourceMetadataPointsAtKeycloak(t *testing.T) {
+// With registration proxying on, clients must be sent here and not to
+// Keycloak: a client registers wherever the advertised server's metadata says,
+// and Keycloak's anonymous registration refuses MCP clients in most realms
+// (invalid_client_metadata, Trusted Hosts) or creates clients this gateway's
+// audience check rejects.
+func TestProtectedResourceMetadataNamesGatewayWhenProxyingRegistration(t *testing.T) {
 	srv, store, ctx := newOAuthServer(t)
 	kcSrv := fakeKeycloak(t, true)
 	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) {
@@ -126,8 +134,8 @@ func TestProtectedResourceMetadataPointsAtKeycloak(t *testing.T) {
 		t.Errorf("resource = %v", body["resource"])
 	}
 	servers, _ := body["authorization_servers"].([]any)
-	if len(servers) != 1 || servers[0] != kcSrv.URL {
-		t.Fatalf("authorization_servers = %v", body["authorization_servers"])
+	if len(servers) != 1 || servers[0] != "https://bbmcp.local" {
+		t.Fatalf("authorization_servers = %v (등록 대행 중에는 게이트웨이여야 합니다)", body["authorization_servers"])
 	}
 	scopes, _ := body["scopes_supported"].([]any)
 	found := false
@@ -138,6 +146,72 @@ func TestProtectedResourceMetadataPointsAtKeycloak(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("필수 스코프가 광고되지 않았습니다: %v", scopes)
+	}
+}
+
+func TestProtectedResourceMetadataNamesKeycloakWhenProxyOff(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloak(t, true)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) {
+		kc.Issuer = kcSrv.URL + "/"
+		kc.MCPAllowDCR = false
+	})
+
+	rec := httptest.NewRecorder()
+	srv.protectedResource(rec, httptest.NewRequest(http.MethodGet, "https://bbmcp.local/.well-known/oauth-protected-resource", nil))
+	servers, _ := decode(t, rec)["authorization_servers"].([]any)
+	if len(servers) != 1 || servers[0] != kcSrv.URL {
+		t.Fatalf("authorization_servers = %v", servers)
+	}
+}
+
+// A client follows authorization_servers[0] and then checks that the metadata
+// it fetched names that same issuer (RFC 8414 §3.3). Whatever is advertised,
+// the document served for it has to agree.
+func TestAdvertisedAuthorizationServerMatchesMetadataIssuer(t *testing.T) {
+	for _, proxy := range []bool{true, false} {
+		srv, store, ctx := newOAuthServer(t)
+		kcSrv := fakeKeycloak(t, true)
+		configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) {
+			kc.Issuer = kcSrv.URL
+			kc.MCPAllowDCR = proxy
+		})
+
+		rec := httptest.NewRecorder()
+		srv.protectedResource(rec, httptest.NewRequest(http.MethodGet, "https://bbmcp.local/.well-known/oauth-protected-resource", nil))
+		servers, _ := decode(t, rec)["authorization_servers"].([]any)
+		if len(servers) != 1 {
+			t.Fatalf("proxy=%t: authorization_servers = %v", proxy, servers)
+		}
+		advertised, _ := servers[0].(string)
+
+		var issuer, registration any
+		if advertised == "https://bbmcp.local" {
+			rec = httptest.NewRecorder()
+			srv.authorizationServerMetadata(rec,
+				httptest.NewRequest(http.MethodGet, "https://bbmcp.local/.well-known/oauth-authorization-server", nil))
+			body := decode(t, rec)
+			issuer, registration = body["issuer"], body["registration_endpoint"]
+		} else {
+			resp, err := http.Get(advertised + "/.well-known/openid-configuration")
+			if err != nil {
+				t.Fatalf("proxy=%t: %v", proxy, err)
+			}
+			var body map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&body)
+			_ = resp.Body.Close()
+			issuer, registration = body["issuer"], body["registration_endpoint"]
+		}
+		if issuer != advertised {
+			t.Errorf("proxy=%t: 광고한 인가 서버 %s 의 메타데이터 issuer = %v", proxy, advertised, issuer)
+		}
+		wantReg := kcSrv.URL + "/clients-registrations/openid-connect"
+		if proxy {
+			wantReg = "https://bbmcp.local/oauth/register"
+		}
+		if registration != wantReg {
+			t.Errorf("proxy=%t: registration_endpoint = %v, want %s", proxy, registration, wantReg)
+		}
 	}
 }
 
@@ -170,8 +244,13 @@ func TestAuthorizationServerMetadataFallsBackToOpenIDConfiguration(t *testing.T)
 		t.Fatalf("상태 코드 %d: %s", rec.Code, rec.Body.String())
 	}
 	body := decode(t, rec)
-	if body["issuer"] != kcSrv.URL {
-		t.Errorf("issuer = %v (Keycloak 을 그대로 가리켜야 합니다)", body["issuer"])
+	// The gateway is the advertised authorization server, so it is the issuer;
+	// sign-in and tokens still happen at Keycloak.
+	if body["issuer"] != "https://bbmcp.local" {
+		t.Errorf("issuer = %v (광고한 인가 서버와 같아야 합니다)", body["issuer"])
+	}
+	if body["authorization_endpoint"] != kcSrv.URL+"/protocol/openid-connect/auth" {
+		t.Errorf("authorization_endpoint = %v", body["authorization_endpoint"])
 	}
 	if body["token_endpoint"] != kcSrv.URL+"/protocol/openid-connect/token" {
 		t.Errorf("token_endpoint = %v", body["token_endpoint"])
@@ -179,6 +258,13 @@ func TestAuthorizationServerMetadataFallsBackToOpenIDConfiguration(t *testing.T)
 	// With registration proxying on, clients are sent to this gateway.
 	if body["registration_endpoint"] != "https://bbmcp.local/oauth/register" {
 		t.Errorf("registration_endpoint = %v", body["registration_endpoint"])
+	}
+	// Keycloak's iss can never equal this issuer, and CIMD would bypass the
+	// pre-registered client.
+	for _, key := range []string{"authorization_response_iss_parameter_supported", "client_id_metadata_document_supported"} {
+		if _, ok := body[key]; ok {
+			t.Errorf("%s 를 그대로 전달했습니다", key)
+		}
 	}
 }
 
@@ -196,6 +282,12 @@ func TestAuthorizationServerMetadataKeepsKeycloakRegistrationWhenProxyOff(t *tes
 	body := decode(t, rec)
 	if body["registration_endpoint"] != kcSrv.URL+"/clients-registrations/openid-connect" {
 		t.Errorf("registration_endpoint = %v", body["registration_endpoint"])
+	}
+	if body["issuer"] != kcSrv.URL {
+		t.Errorf("issuer = %v", body["issuer"])
+	}
+	if body["authorization_response_iss_parameter_supported"] != true {
+		t.Error("Keycloak 을 그대로 광고할 때는 메타데이터를 바꾸지 않아야 합니다")
 	}
 }
 
@@ -326,6 +418,35 @@ func TestMCPOAuthDiagnosticReportsReadiness(t *testing.T) {
 	as, _ := body["authorizationServer"].(map[string]any)
 	if as["tokenEndpoint"] != kcSrv.URL+"/protocol/openid-connect/token" {
 		t.Errorf("tokenEndpoint = %v", as["tokenEndpoint"])
+	}
+	if body["advertisedAuthorizationServer"] != "https://bbmcp.local" {
+		t.Errorf("advertisedAuthorizationServer = %v", body["advertisedAuthorizationServer"])
+	}
+}
+
+func TestMCPOAuthDiagnosticWarnsWhenClientsGoToKeycloakRegistration(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloak(t, true)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) {
+		kc.Issuer = kcSrv.URL
+		kc.MCPAllowDCR = false
+	})
+
+	rec := httptest.NewRecorder()
+	srv.testMCPOAuth(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/api/admin/test/mcp-oauth", nil))
+	body := decode(t, rec)
+	if body["advertisedAuthorizationServer"] != kcSrv.URL {
+		t.Errorf("advertisedAuthorizationServer = %v", body["advertisedAuthorizationServer"])
+	}
+	warnings, _ := body["warnings"].([]any)
+	found := false
+	for _, w := range warnings {
+		if text, _ := w.(string); strings.Contains(text, "invalid_client_metadata") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Keycloak 익명 등록으로 가는 구성을 경고하지 않았습니다: %v", warnings)
 	}
 }
 

@@ -482,9 +482,9 @@ curl -fsS http://localhost:8080/healthz</code></pre>
       <summary>MCP 클라이언트는 어떻게 로그인합니까?</summary>
       <p>
         OAuth 를 지원하는 클라이언트라면 URL 만 등록하면 됩니다. 인증 없이 호출하면 bbmcp 가 401 과 함께
-        보호 리소스 메타데이터 주소를 알려 주고, 클라이언트는 그 정보로 Keycloak 을 찾아 PKCE 로그인을
-        수행합니다. Keycloak 의 동적 등록이 막혀 있으면 bbmcp 가 사전 등록된 공개 클라이언트 ID 를
-        대신 내려 줍니다. OAuth 를 지원하지 않는 클라이언트는 개인 API 키를 사용합니다.
+        보호 리소스 메타데이터 주소를 알려 주고, 클라이언트는 bbmcp 에서 사전 등록된 공개 클라이언트 ID 를
+        받아 Keycloak 에서 PKCE 로그인을 수행합니다. Keycloak 의 동적 등록 정책과 무관하게 동작합니다.
+        OAuth 를 지원하지 않는 클라이언트는 개인 API 키를 사용합니다.
       </p>
     </details>
 

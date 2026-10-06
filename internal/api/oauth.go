@@ -26,10 +26,12 @@ import (
 // both, and mirrors Keycloak's authorization server metadata on its own origin
 // so clients that only probe the resource origin also succeed.
 //
-// The mirrored document replaces Keycloak's registration_endpoint with this
-// gateway's own, which hands out the pre-configured public MCP client. That is
-// what lets a client connect without an operator registering it by hand, in
-// deployments where Keycloak's dynamic registration is closed.
+// With registration proxying on, the gateway names itself as the authorization
+// server and its mirrored document replaces Keycloak's registration_endpoint
+// with this gateway's own, which hands out the pre-configured public MCP
+// client. That is what lets a client connect without an operator registering
+// it by hand, in deployments where Keycloak's dynamic registration is closed.
+// Authorization and token requests still go straight to Keycloak.
 
 // asMetadataCache caches the upstream authorization server metadata.
 type asMetadataCache struct {
@@ -78,8 +80,8 @@ func (s *Server) protectedResource(w http.ResponseWriter, r *http.Request) {
 	resource := s.resourceURL(r, cfg)
 
 	servers := []string{}
-	if kc.Enabled && kc.MCPOAuthEnabled && kc.Issuer != "" {
-		servers = append(servers, strings.TrimRight(kc.Issuer, "/"))
+	if as := s.advertisedAuthorizationServer(r, kc, cfg); as != "" {
+		servers = append(servers, as)
 	}
 
 	scopes := kc.MCPScopes
@@ -98,6 +100,25 @@ func (s *Server) protectedResource(w http.ResponseWriter, r *http.Request) {
 		"resource_name":            "bbmcp",
 		"resource_documentation":   "https://hkjang.github.io/bbmcp/",
 	})
+}
+
+// advertisedAuthorizationServer is the authorization server an MCP client is
+// told to use, or "" when MCP OAuth is off.
+//
+// Clients register wherever that server's own metadata says, so when this
+// gateway hands out the pre-registered client it has to name itself. Naming
+// Keycloak sends every client to Keycloak's anonymous registration, which most
+// realms refuse (Trusted Hosts, allowed client scopes, metadata Keycloak will
+// not accept: invalid_client_metadata), and which, when it does succeed,
+// creates a client whose tokens fail this gateway's audience check.
+func (s *Server) advertisedAuthorizationServer(r *http.Request, kc settings.Keycloak, cfg settings.MCP) string {
+	if !kc.Enabled || !kc.MCPOAuthEnabled || kc.Issuer == "" {
+		return ""
+	}
+	if kc.MCPAllowDCR {
+		return s.resourceURL(r, cfg)
+	}
+	return strings.TrimRight(kc.Issuer, "/")
 }
 
 // authorizationServerMetadata mirrors Keycloak's metadata on this origin.
@@ -124,11 +145,21 @@ func (s *Server) authorizationServerMetadata(w http.ResponseWriter, r *http.Requ
 	for k, v := range body {
 		out[k] = v
 	}
-	// Point registration at this gateway when Keycloak's own dynamic
-	// registration is not available to MCP clients.
 	if kc.MCPAllowDCR {
 		cfg, _ := s.Store.MCP(ctx)
-		out["registration_endpoint"] = s.resourceURL(r, cfg) + "/oauth/register"
+		self := s.resourceURL(r, cfg)
+		// The protected resource metadata names this gateway, and clients check
+		// that the document they fetch names the same issuer (RFC 8414 §3.3).
+		out["issuer"] = self
+		out["registration_endpoint"] = self + "/oauth/register"
+		// Keycloak puts its own issuer in the authorization response, which can
+		// never match this one. Advertising the parameter would make a client
+		// that checks RFC 9207 reject the response once the MCP client stops
+		// sending it ("Exclude Issuer From Authentication Response").
+		delete(out, "authorization_response_iss_parameter_supported")
+		// A client that can use a metadata document URL as its client_id would
+		// skip registration and reach Keycloak as a client this gateway rejects.
+		delete(out, "client_id_metadata_document_supported")
 	}
 	httpx.JSON(w, http.StatusOK, out)
 }
@@ -371,6 +402,7 @@ type mcpOAuthReport struct {
 	ResourceURL         string            `json:"resourceUrl"`
 	ResourceMetadataURL string            `json:"resourceMetadataUrl"`
 	AuthorizationServer map[string]string `json:"authorizationServer,omitempty"`
+	AdvertisedServer    string            `json:"advertisedAuthorizationServer,omitempty"`
 	KeycloakSupportsDCR bool              `json:"keycloakSupportsDynamicRegistration"`
 	GatewayDCREndpoint  string            `json:"gatewayRegistrationEndpoint,omitempty"`
 	MCPClientID         string            `json:"mcpClientId"`
@@ -452,6 +484,7 @@ func (s *Server) testMCPOAuth(w http.ResponseWriter, r *http.Request) {
 		"jwksUri":               pick("jwks_uri"),
 	}
 	report.KeycloakSupportsDCR = pick("registration_endpoint") != ""
+	report.AdvertisedServer = s.advertisedAuthorizationServer(r, kc, cfg)
 	if kc.MCPAllowDCR {
 		report.GatewayDCREndpoint = resource + "/oauth/register"
 	}
@@ -469,6 +502,12 @@ func (s *Server) testMCPOAuth(w http.ResponseWriter, r *http.Request) {
 		report.Warnings = append(report.Warnings,
 			"Keycloak 이 동적 등록을 제공하지 않고 게이트웨이 등록 대행도 꺼져 있습니다. "+
 				"클라이언트에 MCP 클라이언트 ID 를 직접 설정해야 합니다.")
+	}
+	if report.KeycloakSupportsDCR && !kc.MCPAllowDCR {
+		report.Warnings = append(report.Warnings,
+			"게이트웨이 등록 대행이 꺼져 있어 MCP 클라이언트가 Keycloak 익명 동적 등록으로 갑니다. "+
+				"Trusted Hosts·허용 스코프 정책에 막히면 insufficient_scope 또는 invalid_client_metadata 가 나고, "+
+				"통과해도 새로 만들어진 클라이언트의 토큰은 허용 클라이언트가 아니어서 거부됩니다. 등록 대행을 켜십시오.")
 	}
 	if strings.HasPrefix(resource, "http://") && !strings.Contains(resource, "localhost") &&
 		!strings.Contains(resource, "127.0.0.1") {

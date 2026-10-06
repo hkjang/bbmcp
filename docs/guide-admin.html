@@ -236,6 +236,8 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
             <td><code>https://&lt;bbmcp&gt;/auth/oidc/callback</code></td>
             <td><code>http://127.0.0.1:*</code>, <code>http://localhost:*</code></td></tr>
         <tr><td>Web origins</td><td><code>https://&lt;bbmcp&gt;</code></td><td><code>+</code> 또는 비움</td></tr>
+        <tr><td>Exclude Issuer From Authentication Response<br><small>(Advanced 탭)</small></td>
+            <td>Off (기본값)</td><td><strong>On</strong></td></tr>
       </tbody>
     </table>
   </div>
@@ -258,10 +260,10 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
         <tr><td>1</td><td><code>POST /mcp</code> (자격증명 없음)</td>
             <td><code>401</code> + <code>WWW-Authenticate: Bearer resource_metadata="…"</code></td></tr>
         <tr><td>2</td><td><code>GET /.well-known/oauth-protected-resource</code></td>
-            <td>인가 서버(Keycloak issuer)와 스코프</td></tr>
-        <tr><td>3</td><td><code>GET &lt;issuer&gt;/.well-known/openid-configuration</code></td>
-            <td>Keycloak 의 authorize · token · JWKS</td></tr>
-        <tr><td>4</td><td><code>POST /oauth/register</code> (선택)</td>
+            <td>인가 서버(bbmcp 자신)와 스코프</td></tr>
+        <tr><td>3</td><td><code>GET /.well-known/oauth-authorization-server</code></td>
+            <td>Keycloak 의 authorize · token · JWKS 와 bbmcp 의 등록 주소</td></tr>
+        <tr><td>4</td><td><code>POST /oauth/register</code></td>
             <td>사전 등록된 공개 클라이언트 ID</td></tr>
         <tr><td>5</td><td>PKCE 인가 코드 교환</td><td>클라이언트 ↔ Keycloak 직접</td></tr>
         <tr><td>6</td><td><code>POST /mcp</code> + Bearer</td><td>서명·발급자·대상·스코프 검증 후 처리</td></tr>
@@ -271,10 +273,20 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
 
   <div class="note">
     <p>
-      <strong>동적 등록(DCR)이 막혀 있다면.</strong> Keycloak 이 동적 등록을 허용하지 않는 조직이 많습니다.
-      <strong>게이트웨이 동적 등록 대행</strong>을 켜 두면 bbmcp 가 <code>/oauth/register</code> 로 위에서
-      만든 공개 클라이언트 ID 를 대신 돌려줍니다. bbmcp 가 Keycloak 클라이언트를 새로 만들지는 않으므로,
-      클라이언트가 요청하는 리다이렉트 URI 가 Keycloak 쪽에 미리 허용되어 있어야 합니다.
+      <strong>왜 bbmcp 가 인가 서버로 보입니까.</strong> MCP 클라이언트는 보호 리소스 메타데이터가 알려 준
+      인가 서버의 메타데이터에 적힌 곳으로 동적 등록(DCR)을 합니다. Keycloak 을 알려 주면 클라이언트가
+      Keycloak 의 익명 등록으로 가는데, 대부분의 realm 은 이를 막고(<code>invalid_client_metadata</code>,
+      Trusted Hosts 거부) 통과하더라도 새로 생긴 클라이언트의 토큰은 아래 대상 검증에 걸립니다. 그래서
+      <strong>게이트웨이 동적 등록 대행</strong>(기본값 켜짐)이 켜져 있으면 bbmcp 가 자신을 인가 서버로 알리고,
+      Keycloak 메타데이터를 그대로 보여 주되 등록 주소만 <code>/oauth/register</code> 로 바꿔 위에서 만든
+      공개 클라이언트 ID 를 돌려줍니다. 로그인과 토큰 발급은 그대로 Keycloak 이 합니다.
+    </p>
+    <p>
+      bbmcp 가 Keycloak 클라이언트를 새로 만들지는 않으므로, 클라이언트가 요청하는 리다이렉트 URI 가
+      Keycloak 쪽에 미리 허용되어 있어야 합니다. 또 Keycloak 은 로그인 응답에 자기 issuer 를
+      <code>iss</code> 로 붙이는데, 이는 클라이언트가 아는 인가 서버(bbmcp)와 다르므로 이를 검사하는
+      클라이언트(Python MCP SDK 등)는 로그인을 거부합니다. 위 표대로 <em>Exclude Issuer From Authentication
+      Response</em> 를 켜 두십시오.
     </p>
   </div>
 
@@ -333,6 +345,16 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
           <td>MCP 클라이언트 로그인 창에서 실패</td>
           <td>공개 클라이언트에 루프백 와일드카드 포트가 없음</td>
           <td><code>http://127.0.0.1:*</code> 와 <code>http://localhost:*</code> 를 등록하십시오</td>
+        </tr>
+        <tr>
+          <td>MCP 연결 시 <code>invalid_client_metadata</code>, <code>Policy 'Trusted Hosts' rejected request</code>, <code>insufficient_scope</code></td>
+          <td>클라이언트가 Keycloak 의 익명 동적 등록으로 감 (v0.2.5 이하, 또는 등록 대행을 끈 경우)</td>
+          <td>v0.2.6 이상에서 <strong>게이트웨이 동적 등록 대행</strong>을 켜십시오. 이미 실패했던 클라이언트는 저장된 bbmcp 인증 정보를 지우고 다시 연결하십시오 (예: Claude Code 는 <code>claude mcp remove</code> 후 다시 추가)</td>
+        </tr>
+        <tr>
+          <td>로그인 후 <code>Authorization response iss mismatch</code></td>
+          <td>Keycloak 이 로그인 응답에 자기 issuer 를 붙임</td>
+          <td>MCP 공개 클라이언트의 <em>Exclude Issuer From Authentication Response</em> 를 켜십시오</td>
         </tr>
         <tr>
           <td>저장 시 <code>INVALID_URL</code></td>

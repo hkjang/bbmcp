@@ -392,24 +392,33 @@ func TestMCPOAuthDiscoveryAndCall(t *testing.T) {
 		t.Fatalf("resource_metadata 를 추출할 수 없습니다: %q", challenge)
 	}
 
-	// 2. Protected resource metadata names the authorization server.
+	// 2. Protected resource metadata names the authorization server. It is
+	//    this gateway, because the gateway is what hands out the MCP client.
 	resp, meta := gw.getJSON(t, metaURL)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("리소스 메타데이터 상태 %d", resp.StatusCode)
 	}
 	servers, _ := meta["authorization_servers"].([]any)
-	if len(servers) != 1 || servers[0] != kc.srv.URL {
+	if len(servers) != 1 || servers[0] != gw.srv.URL {
 		t.Fatalf("authorization_servers = %v", meta["authorization_servers"])
 	}
 
-	// 3. The mirrored authorization server metadata carries Keycloak's
-	//    endpoints and this gateway's registration endpoint.
-	resp, asMeta := gw.getJSON(t, gw.srv.URL+"/.well-known/oauth-authorization-server")
+	// 3. The client fetches metadata from the server it was given, as a real
+	//    one does, and requires the issuer to echo it. Sign-in and tokens stay
+	//    at Keycloak; registration comes to this gateway.
+	asURL, _ := servers[0].(string)
+	resp, asMeta := gw.getJSON(t, asURL+"/.well-known/oauth-authorization-server")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("인가 서버 메타데이터 상태 %d", resp.StatusCode)
 	}
-	if asMeta["issuer"] != kc.srv.URL {
-		t.Errorf("issuer = %v", asMeta["issuer"])
+	if asMeta["issuer"] != asURL {
+		t.Errorf("issuer = %v, 광고한 인가 서버 %s 와 달라 클라이언트가 거부합니다", asMeta["issuer"], asURL)
+	}
+	if asMeta["authorization_endpoint"] != kc.srv.URL+"/protocol/openid-connect/auth" {
+		t.Errorf("authorization_endpoint = %v", asMeta["authorization_endpoint"])
+	}
+	if asMeta["token_endpoint"] != kc.srv.URL+"/protocol/openid-connect/token" {
+		t.Errorf("token_endpoint = %v", asMeta["token_endpoint"])
 	}
 	regEndpoint, _ := asMeta["registration_endpoint"].(string)
 	if regEndpoint != gw.srv.URL+"/oauth/register" {
