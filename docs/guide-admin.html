@@ -128,7 +128,7 @@
 
   <h3 id="compose">1.2 compose 기동</h3>
   <pre><code># 1) 릴리스 이미지 적재 (오프라인망에서는 반입한 파일 사용)
-docker load -i bbmcp-v0.2.7.tar.gz
+docker load -i bbmcp-v0.2.8.tar.gz
 
 # 2) 환경변수 준비
 cp deploy/.env.example deploy/.env
@@ -656,7 +656,7 @@ pg_dump "$DATABASE_URL" --format=custom --file=bbmcp-$(date +%Y%m%d).dump
 # + ENCRYPTION_KEY
 
 # 업그레이드
-docker load -i bbmcp-v0.2.7.tar.gz
+docker load -i bbmcp-v0.2.8.tar.gz
 # deploy/.env 의 BBMCP_VERSION 을 올린 뒤
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 # 마이그레이션은 기동 시 자동 적용됩니다</code></pre>
