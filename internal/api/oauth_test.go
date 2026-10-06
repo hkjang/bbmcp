@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -15,11 +16,38 @@ import (
 	"github.com/hkjang/bbmcp/internal/settings"
 )
 
-// fakeKeycloak serves the discovery document a real realm would.
+// fakeKeycloak serves the discovery document a real realm would, and an
+// authorization endpoint that accepts every redirect URI.
 func fakeKeycloak(t *testing.T, withDCR bool) *httptest.Server {
+	t.Helper()
+	return fakeKeycloakWith(t, withDCR, nil)
+}
+
+// keycloakErrorPage is the part of Keycloak 26's error page bbmcp reads.
+const keycloakErrorPage = `<div id="kc-error-message">
+            <p class="instruction">Invalid parameter: redirect_uri</p>
+        </div>`
+
+// fakeKeycloakWith is fakeKeycloak whose authorization endpoint, like
+// Keycloak, sends the browser back only to redirect URIs allow accepts and
+// shows its error page for any other. A nil allow accepts all of them.
+func fakeKeycloakWith(t *testing.T, withDCR bool, allow func(redirectURI string) bool) *httptest.Server {
 	t.Helper()
 	var srv *httptest.Server
 	mux := http.NewServeMux()
+	mux.HandleFunc("/protocol/openid-connect/auth", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		redirect := q.Get("redirect_uri")
+		if allow != nil && !allow(redirect) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(keycloakErrorPage))
+			return
+		}
+		// prompt=none without a session: Keycloak's answer, with its iss.
+		http.Redirect(w, r, redirect+"?error=login_required&state="+url.QueryEscape(q.Get("state"))+
+			"&iss="+url.QueryEscape(srv.URL), http.StatusFound)
+	})
 	doc := func(w http.ResponseWriter, _ *http.Request) {
 		body := map[string]any{
 			"issuer":                                srv.URL,
@@ -534,5 +562,165 @@ func TestMCPOAuthReportListsUrisToRegister(t *testing.T) {
 	loopback, _ := body["loopbackRedirectUris"].([]any)
 	if len(loopback) != 2 || loopback[0] != "http://127.0.0.1:*" {
 		t.Errorf("loopbackRedirectUris = %v", body["loopbackRedirectUris"])
+	}
+}
+
+// onlyLoopbackIP is how a realm set up from the old README looks: the MCP
+// client admits http://127.0.0.1:* and nothing else.
+func onlyLoopbackIP(redirect string) bool { return strings.HasPrefix(redirect, "http://127.0.0.1:") }
+
+// Claude Code calls back on localhost. A realm that only admits 127.0.0.1
+// used to hand it a client_id and leave the person at Keycloak's "Invalid
+// parameter: redirect_uri" page; the refusal now comes back to the client
+// with the value to register.
+func TestRegisterClientRefusedWhenKeycloakRejectsRedirect(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloakWith(t, true, onlyLoopbackIP)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) { kc.Issuer = kcSrv.URL })
+
+	rec := httptest.NewRecorder()
+	srv.registerClient(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/oauth/register",
+		jsonBody(`{"client_name":"Claude Code (bbmcp)","redirect_uris":["http://localhost:58023/callback"]}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("상태 %d, 400 이어야 합니다 (%s)", rec.Code, rec.Body.String())
+	}
+	body := decode(t, rec)
+	if body["error"] != "invalid_redirect_uri" {
+		t.Errorf("error = %v", body["error"])
+	}
+	desc, _ := body["error_description"].(string)
+	for _, want := range []string{"http://localhost:*", "Invalid parameter: redirect_uri", "bbmcp-mcp"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("설명에 %q 가 없습니다: %s", want, desc)
+		}
+	}
+}
+
+func TestRegisterClientKeepsOnlyRedirectsKeycloakAccepts(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloakWith(t, true, onlyLoopbackIP)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) { kc.Issuer = kcSrv.URL })
+
+	// VS Code offers a web redirect and a loopback one.
+	rec := httptest.NewRecorder()
+	srv.registerClient(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/oauth/register",
+		jsonBody(`{"redirect_uris":["https://vscode.dev/redirect","http://127.0.0.1:33418/"]}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("상태 %d (%s)", rec.Code, rec.Body.String())
+	}
+	got, _ := decode(t, rec)["redirect_uris"].([]any)
+	if len(got) != 1 || got[0] != "http://127.0.0.1:33418/" {
+		t.Fatalf("redirect_uris = %v, Keycloak 이 받는 것만 남아야 합니다", got)
+	}
+}
+
+// The check advises; a Keycloak that cannot be asked must not block a
+// sign-in that would work.
+func TestRegisterClientProceedsWhenKeycloakCannotBeAsked(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	var srvURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 srvURL,
+			"authorization_endpoint": srvURL + "/protocol/openid-connect/auth",
+			"token_endpoint":         srvURL + "/protocol/openid-connect/token",
+		})
+	})
+	mux.HandleFunc("/protocol/openid-connect/auth", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream down", http.StatusBadGateway)
+	})
+	kcSrv := httptest.NewServer(mux)
+	t.Cleanup(kcSrv.Close)
+	srvURL = kcSrv.URL
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) { kc.Issuer = kcSrv.URL })
+
+	rec := httptest.NewRecorder()
+	srv.registerClient(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/oauth/register",
+		jsonBody(`{"redirect_uris":["http://localhost:58023/callback"]}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("상태 %d, 확인할 수 없을 때는 등록해야 합니다 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPOAuthDiagnosticFindsRefusedLoopback(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloakWith(t, true, onlyLoopbackIP)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) { kc.Issuer = kcSrv.URL })
+
+	rec := httptest.NewRecorder()
+	srv.testMCPOAuth(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/api/admin/test/mcp-oauth", nil))
+	body := decode(t, rec)
+	if body["ok"] == true {
+		t.Fatal("Keycloak 이 localhost 를 거부하는데 연결 가능으로 보고했습니다")
+	}
+	checks, _ := body["redirectChecks"].([]any)
+	if len(checks) != 2 {
+		t.Fatalf("redirectChecks = %v", body["redirectChecks"])
+	}
+	ip, _ := checks[0].(map[string]any)
+	lh, _ := checks[1].(map[string]any)
+	if ip["accepted"] != true {
+		t.Errorf("127.0.0.1 = %v", ip)
+	}
+	if lh["accepted"] == true || lh["register"] != "http://localhost:*" || lh["detail"] != "Invalid parameter: redirect_uri" {
+		t.Errorf("localhost = %v", lh)
+	}
+	found := false
+	for _, w := range body["warnings"].([]any) {
+		if text, _ := w.(string); strings.Contains(text, "http://localhost:*") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("등록할 값을 경고하지 않았습니다: %v", body["warnings"])
+	}
+}
+
+// Keycloak stamps iss unless the client excludes it, and a strict client then
+// refuses the login because this gateway is the advertised issuer.
+func TestMCPOAuthDiagnosticWarnsWhenKeycloakSendsIssuer(t *testing.T) {
+	srv, store, ctx := newOAuthServer(t)
+	kcSrv := fakeKeycloak(t, true)
+	configureKeycloak(t, store, ctx, func(kc *settings.Keycloak) { kc.Issuer = kcSrv.URL })
+
+	rec := httptest.NewRecorder()
+	srv.testMCPOAuth(rec, httptest.NewRequest(http.MethodPost, "https://bbmcp.local/api/admin/test/mcp-oauth", nil))
+	body := decode(t, rec)
+	if body["ok"] != true {
+		t.Fatalf("ok = %v", body["ok"])
+	}
+	count := 0
+	for _, w := range body["warnings"].([]any) {
+		if text, _ := w.(string); strings.Contains(text, "Exclude Issuer From Authentication Response") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("issuer 경고 %d 개, 한 번이어야 합니다: %v", count, body["warnings"])
+	}
+}
+
+func TestRegistrationForUsesLoopbackWildcard(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://localhost:58023/callback":         "http://localhost:*",
+		"http://127.0.0.1:33418/":                 "http://127.0.0.1:*",
+		"http://[::1]:5000/cb":                    "http://[::1]:*",
+		"https://claude.ai/api/mcp/auth_callback": "https://claude.ai/api/mcp/auth_callback",
+		"cursor://anysphere.cursor-mcp/oauth/cb":  "cursor://anysphere.cursor-mcp/oauth/cb",
+	} {
+		if got := registrationFor(in); got != want {
+			t.Errorf("registrationFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestKeycloakMessageReadsErrorPage(t *testing.T) {
+	if got := keycloakMessage([]byte(keycloakErrorPage)); got != "Invalid parameter: redirect_uri" {
+		t.Errorf("keycloakMessage = %q", got)
+	}
+	if got := keycloakMessage([]byte("<html>no message</html>")); got != "" {
+		t.Errorf("keycloakMessage = %q", got)
 	}
 }

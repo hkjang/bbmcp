@@ -300,6 +300,16 @@ export interface KeycloakSettings {
   mcpAllowDynamicRegistration: boolean
 }
 
+/** Keycloak's own answer to whether it will send the browser back to a URI. */
+export interface RedirectCheck {
+  uri: string
+  accepted: boolean
+  detail?: string
+  register?: string
+  sendsIssuer?: boolean
+  error?: string
+}
+
 export interface KeycloakTestReport {
   ok: boolean
   error?: string
@@ -314,6 +324,7 @@ export interface KeycloakTestReport {
     webOrigins: string[]
     validPostLogoutRedirectUris: string[]
   }
+  redirectCheck?: RedirectCheck
   warnings?: string[]
 }
 
@@ -327,6 +338,7 @@ export interface MCPOAuthReport {
   resourceMetadataUrl: string
   authorizationServer?: Record<string, string>
   advertisedAuthorizationServer?: string
+  redirectChecks?: RedirectCheck[]
   keycloakSupportsDynamicRegistration: boolean
   gatewayRegistrationEndpoint?: string
   mcpClientId: string

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -722,6 +723,19 @@ func (s *Server) testTarget(w http.ResponseWriter, r *http.Request) {
 		out["authUrl"] = cfg.Endpoint.AuthURL
 		out["tokenUrl"] = cfg.Endpoint.TokenURL
 		out["scopes"] = cfg.Scopes
+
+		// Ask Keycloak whether it will send the browser back to the redirect
+		// URI, rather than leaving that to the first person who signs in.
+		check := checkRedirect(ctx, kc, cfg.Endpoint.AuthURL, kc.ClientID, redirect)
+		out["redirectCheck"] = check
+		switch {
+		case check.Error != "":
+			warnings = append(warnings, "Redirect URI 를 Keycloak 에 확인하지 못했습니다: "+check.Error)
+		case !check.Accepted:
+			out["ok"] = false
+			out["error"] = fmt.Sprintf("Keycloak 이 Redirect URI %s 를 거부합니다 (Keycloak: %s). "+
+				"%s 클라이언트의 Valid redirect URIs 에 아래 값을 그대로 등록하십시오.", redirect, check.Detail, kc.ClientID)
+		}
 		if len(warnings) > 0 {
 			out["warnings"] = warnings
 		}

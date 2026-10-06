@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strings"
@@ -177,11 +178,7 @@ func (s *Server) fetchASMetadata(ctx context.Context, kc settings.Keycloak) (map
 	}
 	s.asMeta.mu.Unlock()
 
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
-	if kc.InsecureSkipTLS {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 - operator opt-in for internal CAs
-	}
-	client := &http.Client{Transport: tr, Timeout: 15 * time.Second}
+	client := keycloakHTTPClient(kc)
 
 	var lastErr error
 	for _, path := range []string{
@@ -225,6 +222,15 @@ func (s *Server) fetchASMetadata(ctx context.Context, kc settings.Keycloak) (map
 		lastErr = errors.New("알 수 없는 오류")
 	}
 	return nil, fmt.Errorf("Keycloak 메타데이터를 가져올 수 없습니다: %w", lastErr)
+}
+
+// keycloakHTTPClient is the client bbmcp uses for its own calls to Keycloak.
+func keycloakHTTPClient(kc settings.Keycloak) *http.Client {
+	tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if kc.InsecureSkipTLS {
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 - operator opt-in for internal CAs
+	}
+	return &http.Client{Transport: tr, Timeout: 15 * time.Second}
 }
 
 // registrationRequest is the subset of RFC 7591 bbmcp reads.
@@ -309,17 +315,43 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keycloak, not this gateway, decides whether the browser may come back to
+	// these addresses. Asking it now turns its "Invalid parameter:
+	// redirect_uri" page into a message the client shows, naming the value to
+	// register.
+	detail := map[string]any{
+		"clientName":   req.ClientName,
+		"redirectUris": redirects,
+		"clientId":     clientID,
+	}
+	if meta, err := s.fetchASMetadata(ctx, kc); err == nil {
+		authEndpoint, _ := meta["authorization_endpoint"].(string)
+		kept, refused, refusal := checkRegistrationRedirects(ctx, kc, authEndpoint, clientID, redirects)
+		if len(refused) > 0 {
+			detail["refusedByKeycloak"] = refused
+		}
+		if refusal != "" {
+			s.Audit.Write(ctx, audit.Entry{
+				Category: audit.CatAuth,
+				Action:   "oauth.register",
+				Success:  false,
+				IP:       ip,
+				Message:  "MCP 클라이언트 등록 거부: Keycloak 이 리다이렉트 URI 를 허용하지 않음",
+				Detail:   detail,
+			})
+			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", refusal)
+			return
+		}
+		redirects = kept
+	}
+
 	s.Audit.Write(ctx, audit.Entry{
 		Category: audit.CatAuth,
 		Action:   "oauth.register",
 		Success:  true,
 		IP:       ip,
 		Message:  "MCP 클라이언트 등록 요청",
-		Detail: map[string]any{
-			"clientName":   req.ClientName,
-			"redirectUris": redirects,
-			"clientId":     clientID,
-		},
+		Detail:   detail,
 	})
 
 	// A public client: no secret is issued, PKCE carries the proof.
@@ -408,6 +440,7 @@ type mcpOAuthReport struct {
 	MCPClientID         string            `json:"mcpClientId"`
 	WebRedirectURI      string            `json:"webRedirectUri"`
 	LoopbackRedirects   []string          `json:"loopbackRedirectUris"`
+	RedirectChecks      []redirectCheck   `json:"redirectChecks,omitempty"`
 	AcceptedAudiences   []string          `json:"acceptedAudiences"`
 	RequiredScope       string            `json:"requiredScope,omitempty"`
 	Scopes              []string          `json:"scopes"`
@@ -497,6 +530,8 @@ func (s *Server) testMCPOAuth(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(kc.MCPClientID) == "" {
 		report.Warnings = append(report.Warnings,
 			"MCP 클라이언트 ID 가 비어 있습니다. Keycloak 에 공개 클라이언트를 만들고 그 ID 를 입력하십시오.")
+	} else {
+		report.Warnings = append(report.Warnings, s.checkLoopbackRedirects(ctx, kc, pick("authorization_endpoint"), &report)...)
 	}
 	if !report.KeycloakSupportsDCR && !kc.MCPAllowDCR {
 		report.Warnings = append(report.Warnings,
@@ -524,7 +559,40 @@ func (s *Server) testMCPOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	report.OK = report.Error == "" && strings.TrimSpace(kc.MCPClientID) != ""
+	for _, check := range report.RedirectChecks {
+		if !check.Accepted && check.Error == "" {
+			report.OK = false
+		}
+	}
 	httpx.JSON(w, http.StatusOK, report)
+}
+
+// checkLoopbackRedirects asks Keycloak about the two callback shapes MCP
+// clients use, an ephemeral port on 127.0.0.1 or on localhost (Claude Code
+// uses localhost), and returns warnings for what it refuses.
+func (s *Server) checkLoopbackRedirects(ctx context.Context, kc settings.Keycloak, authEndpoint string, report *mcpOAuthReport) []string {
+	warnings := []string{}
+	port := 49152 + rand.IntN(16000)
+	issuerWarned := false
+	for _, host := range []string{"127.0.0.1", "localhost"} {
+		check := checkRedirect(ctx, kc, authEndpoint, kc.MCPClientID, fmt.Sprintf("http://%s:%d/callback", host, port))
+		report.RedirectChecks = append(report.RedirectChecks, check)
+		switch {
+		case check.Error != "":
+			warnings = append(warnings, "리다이렉트 URI 를 Keycloak 에 확인하지 못했습니다: "+check.Error)
+		case !check.Accepted:
+			warnings = append(warnings, fmt.Sprintf(
+				"Keycloak 이 %s 를 거부합니다 (Keycloak: %s). %s 클라이언트의 Valid redirect URIs 에 %s 를 추가하십시오. "+
+					"이대로면 로그인 창에 Invalid parameter: redirect_uri 가 납니다.",
+				check.URI, check.Detail, kc.MCPClientID, check.Register))
+		case check.SendsIssuer && kc.MCPAllowDCR && !issuerWarned:
+			issuerWarned = true
+			warnings = append(warnings, "Keycloak 이 로그인 응답에 자기 issuer 를 붙입니다. "+
+				kc.MCPClientID+" 클라이언트의 Exclude Issuer From Authentication Response 를 켜십시오. "+
+				"이를 검사하는 클라이언트(Python MCP SDK 등)가 로그인을 거부합니다.")
+		}
+	}
+	return warnings
 }
 
 // methodsOf reads a string-array field from a metadata document.

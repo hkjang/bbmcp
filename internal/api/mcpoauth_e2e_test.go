@@ -39,6 +39,9 @@ type keycloakStub struct {
 	srv *httptest.Server
 	key *rsa.PrivateKey
 	kid string
+	// allowRedirect decides, as Keycloak's Valid redirect URIs would, where
+	// the authorization endpoint may send the browser. nil accepts all.
+	allowRedirect func(redirectURI string) bool
 }
 
 func newKeycloakStub(t *testing.T, withDCR bool) *keycloakStub {
@@ -66,6 +69,15 @@ func newKeycloakStub(t *testing.T, withDCR bool) *keycloakStub {
 			body["registration_endpoint"] = stub.srv.URL + "/clients-registrations/openid-connect"
 		}
 		writeJSON(w, body)
+	})
+	mux.HandleFunc("/protocol/openid-connect/auth", func(w http.ResponseWriter, r *http.Request) {
+		redirect := r.URL.Query().Get("redirect_uri")
+		if stub.allowRedirect != nil && !stub.allowRedirect(redirect) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`<p class="instruction">Invalid parameter: redirect_uri</p>`))
+			return
+		}
+		http.Redirect(w, r, redirect+"?error=login_required&state="+r.URL.Query().Get("state"), http.StatusFound)
 	})
 	mux.HandleFunc("/protocol/openid-connect/certs", func(w http.ResponseWriter, r *http.Request) {
 		pub := key.PublicKey
@@ -815,5 +827,67 @@ func TestSettingsRejectMalformedUrls(t *testing.T) {
 	}
 	if saved.RedirectURL != "https://bbmcp.local/auth/oidc/callback" {
 		t.Errorf("redirectUrl = %q", saved.RedirectURL)
+	}
+}
+
+// TestKeycloakCheckAsksKeycloakAboutRedirectURI keeps the console connection
+// check from reporting success for a redirect URI Keycloak will refuse at the
+// first sign-in.
+func TestKeycloakCheckAsksKeycloakAboutRedirectURI(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+	jar := gw.login(t, "admin", "bootstrap-password")
+
+	check := func() map[string]any {
+		t.Helper()
+		resp, err := (&http.Client{Jar: jar}).Post(gw.srv.URL+"/api/admin/test/keycloak", "application/json", nil)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return out
+	}
+
+	out := check()
+	if out["ok"] != true {
+		t.Fatalf("등록된 Redirect URI 인데 실패로 보고했습니다: %v", out)
+	}
+
+	kc.allowRedirect = func(string) bool { return false }
+	out = check()
+	if out["ok"] == true {
+		t.Fatalf("Keycloak 이 거부하는데 성공으로 보고했습니다: %v", out)
+	}
+	msg, _ := out["error"].(string)
+	if !strings.Contains(msg, "Invalid parameter: redirect_uri") || !strings.Contains(msg, gw.srv.URL+"/auth/oidc/callback") {
+		t.Errorf("error = %q", msg)
+	}
+	rc, _ := out["redirectCheck"].(map[string]any)
+	if rc["accepted"] != false {
+		t.Errorf("redirectCheck = %v", rc)
+	}
+}
+
+// TestMCPRegistrationRefusesWhatKeycloakWouldRefuse runs the registration
+// against the gateway's routes: Claude Code's localhost callback in a realm
+// that only admits 127.0.0.1.
+func TestMCPRegistrationRefusesWhatKeycloakWouldRefuse(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	kc.allowRedirect = func(u string) bool { return strings.HasPrefix(u, "http://127.0.0.1:") }
+	gw := newGateway(t, kc)
+
+	resp, reg := gw.post(t, "/oauth/register", "", `{"redirect_uris":["http://localhost:58023/callback"]}`)
+	if resp.StatusCode != http.StatusBadRequest || reg["error"] != "invalid_redirect_uri" {
+		t.Fatalf("상태 %d: %v", resp.StatusCode, reg)
+	}
+	if desc, _ := reg["error_description"].(string); !strings.Contains(desc, "http://localhost:*") {
+		t.Errorf("error_description = %q", desc)
+	}
+
+	resp, reg = gw.post(t, "/oauth/register", "", `{"redirect_uris":["http://127.0.0.1:41234/callback"]}`)
+	if resp.StatusCode != http.StatusCreated || reg["client_id"] != "bbmcp-mcp" {
+		t.Fatalf("상태 %d: %v", resp.StatusCode, reg)
 	}
 }

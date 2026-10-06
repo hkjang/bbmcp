@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Code, List, Stack, Table, Text } from '@mantine/core'
+import { Alert, Badge, Button, Code, Group, List, Stack, Table, Text } from '@mantine/core'
 import { IconAlertTriangle, IconPlugConnected, IconShieldLock } from '@tabler/icons-react'
 import { useMutation } from '@tanstack/react-query'
 
@@ -14,7 +14,13 @@ import {
   StatList,
   TableScroll,
 } from '../../components/ui'
-import { api, type KeycloakSettings, type KeycloakTestReport, type MCPOAuthReport } from '../../lib/api'
+import {
+  api,
+  type KeycloakSettings,
+  type KeycloakTestReport,
+  type MCPOAuthReport,
+  type RedirectCheck,
+} from '../../lib/api'
 import { useSettingsGroup } from '../../lib/useSettingsGroup'
 
 const loginFields: Field<KeycloakSettings>[] = [
@@ -335,6 +341,7 @@ function KeycloakReport({ report }: { report: KeycloakTestReport }) {
             {report.register.validRedirectUris.map((uri) => (
               <CopyField key={uri} value={uri} />
             ))}
+            {report.redirectCheck ? <RedirectCheckLine check={report.redirectCheck} /> : null}
           </div>
           <div>
             <Text size="sm" fw={600} mb={4}>
@@ -428,6 +435,16 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
               <CopyField key={uri} value={uri} />
             ))}
           </Stack>
+          {report.redirectChecks?.length ? (
+            <Stack gap={6} mt="md">
+              <Text size="sm" fw={600}>
+                Keycloak 에 실제로 확인한 결과
+              </Text>
+              {report.redirectChecks.map((check) => (
+                <RedirectCheckLine key={check.uri} check={check} />
+              ))}
+            </Stack>
+          ) : null}
           {report.gatewayRegistrationEndpoint ? (
             <Text size="sm" mt="md">
               같은 클라이언트의 Advanced 탭에서 <Code>Exclude Issuer From Authentication Response</Code> 를
@@ -447,5 +464,37 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
         Keycloak 로그인 후 자동으로 토큰을 받습니다.
       </Text>
     </Section>
+  )
+}
+
+/** One redirect URI and what Keycloak answered when bbmcp asked about it. */
+function RedirectCheckLine({ check }: { check: RedirectCheck }) {
+  const [color, label] = check.error
+    ? ['gray', '확인 불가']
+    : check.accepted
+      ? ['teal', 'Keycloak 허용']
+      : ['red', 'Keycloak 거부']
+  return (
+    <Stack gap={4} mt={6}>
+      <Group gap="xs" wrap="nowrap">
+        <Badge color={color} variant="light" style={{ flexShrink: 0 }}>
+          {label}
+        </Badge>
+        <Code style={{ overflowWrap: 'anywhere' }}>{check.uri}</Code>
+      </Group>
+      {check.error ? (
+        <Text size="xs" c="dimmed">
+          {check.error}
+        </Text>
+      ) : null}
+      {!check.accepted && !check.error ? (
+        <>
+          <Text size="xs" c="dimmed">
+            Keycloak: {check.detail}. 아래 값을 Valid redirect URIs 에 추가하십시오.
+          </Text>
+          {check.register ? <CopyField value={check.register} /> : null}
+        </>
+      ) : null}
+    </Stack>
   )
 }
