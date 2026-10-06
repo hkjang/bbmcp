@@ -43,7 +43,7 @@
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "AI Gateway",
       "operatingSystem": "Linux (Docker)",
-      "softwareVersion": "0.2.5",
+      "softwareVersion": "0.2.6",
       "description": "Bitbucket Server 6.9.1 용 MCP(Model Context Protocol) 게이트웨이. Keycloak SSO 로 사용자를 인증하고, 요청자 본인의 Bitbucket 유효 권한으로만 저장소와 풀 리퀘스트에 접근하도록 강제하며, 쓰기 작업에는 승인을 요구하고 모든 호출을 감사 기록에 남깁니다.",
       "url": "https://hkjang.github.io/bbmcp/",
       "downloadUrl": "https://github.com/hkjang/bbmcp/releases",
@@ -124,7 +124,7 @@
       "inLanguage": "ko",
       "totalTime": "PT10M",
       "step": [
-        { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.2.5.tar.gz 로 릴리스 이미지를 적재합니다." },
+        { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.2.6.tar.gz 로 릴리스 이미지를 적재합니다." },
         { "@type": "HowToStep", "position": 2, "name": "환경변수 준비", "text": "DATABASE_URL, BOOTSTRAP_ADMIN, BOOTSTRAP_ADMIN_PASSWORD, ENCRYPTION_KEY 네 개를 설정합니다." },
         { "@type": "HowToStep", "position": 3, "name": "기동", "text": "docker compose -f deploy/docker-compose.yml up -d 로 PostgreSQL 과 함께 기동합니다." },
         { "@type": "HowToStep", "position": 4, "name": "관리자 설정", "text": "관리자 콘솔에서 Keycloak, Bitbucket 서비스 계정, 접근 정책, 도구 활성화를 설정합니다." }
@@ -400,9 +400,9 @@
     </p>
 
     <h3>1. 이미지 적재</h3>
-    <pre><code>docker load -i bbmcp-v0.2.5.tar.gz
+    <pre><code>docker load -i bbmcp-v0.2.6.tar.gz
 docker images | grep bbmcp
-# bbmcp   v0.2.5   ...</code></pre>
+# bbmcp   v0.2.6   ...</code></pre>
 
     <h3>2. 환경변수</h3>
     <div class="table-scroll">
