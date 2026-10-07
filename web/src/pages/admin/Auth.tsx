@@ -7,6 +7,7 @@ import {
   CopyField,
   ErrorBlock,
   JsonBlock,
+  TextBlock,
   LoadingBlock,
   PageHeader,
   SaveBar,
@@ -16,6 +17,8 @@ import {
 } from '../../components/ui'
 import {
   api,
+  type DiscoveryTrace,
+  type KeycloakRegistrationReport,
   type KeycloakSettings,
   type KeycloakTestReport,
   type MCPOAuthReport,
@@ -103,7 +106,7 @@ const mcpFields: Field<KeycloakSettings>[] = [
     key: 'mcpAllowDynamicRegistration',
     label: '게이트웨이 동적 등록 대행',
     description:
-      'MCP 클라이언트에 이 게이트웨이를 인가 서버로 알려 아래 클라이언트 ID 를 내려 줍니다. 끄면 클라이언트가 Keycloak 익명 동적 등록으로 갑니다.',
+      '켜 두십시오(권장). MCP 클라이언트에 이 게이트웨이를 인가 서버로 알리고 아래 클라이언트 ID 를 내려 줍니다. 끄면 클라이언트가 Keycloak 에 직접 등록하는데, Keycloak 13 이하(예: 10)는 이를 invalid_client_metadata 로 거부합니다.',
   },
   {
     kind: 'text',
@@ -141,6 +144,12 @@ export function AdminAuthPage() {
   })
   const oauthTest = useMutation({
     mutationFn: () => api.post<MCPOAuthReport>('/api/admin/test/mcp-oauth'),
+  })
+  const registrationTest = useMutation({
+    mutationFn: () => api.post<KeycloakRegistrationReport>('/api/admin/test/keycloak-registration'),
+  })
+  const trace = useMutation({
+    mutationFn: () => api.get<DiscoveryTrace>('/api/admin/mcp-oauth/trace'),
   })
 
   const origin = window.location.origin
@@ -211,6 +220,74 @@ export function AdminAuthPage() {
       {oauthTest.error ? <ErrorBlock error={oauthTest.error} /> : null}
       {oauthTest.data ? <OAuthReport report={oauthTest.data} /> : null}
 
+      {query.data ? (
+        <Section
+          title="MCP 클라이언트 진단"
+          description="에이전트가 로그인에서 실패할 때, 실제로 어디까지 왔는지 확인합니다."
+        >
+          <Stack gap="lg">
+            <div>
+              <Group justify="space-between" mb="xs">
+                <Text fw={600}>최근 클라이언트 탐색 기록</Text>
+                <Button size="compact-sm" variant="default" loading={trace.isPending} onClick={() => trace.mutate()}>
+                  기록 보기
+                </Button>
+              </Group>
+              <Text size="sm" c="dimmed">
+                정상이면 401 → 보호 리소스 메타데이터 → 인가 서버 메타데이터 → 등록 순서로 보입니다. 401 만 있고 그 뒤가
+                없다면 클라이언트가 이 게이트웨이가 아니라 다른 곳(예: Keycloak)을 인가 서버로 쓰고 있습니다. 옛 bbmcp 가
+                응답했거나, 클라이언트가 예전 정보를 기억하거나, 설정에 고정되어 있는 경우입니다.
+              </Text>
+              {trace.error ? <ErrorBlock error={trace.error} /> : null}
+              {trace.data ? <TraceTable trace={trace.data} /> : null}
+            </div>
+
+            <div>
+              <Text fw={600} mb="xs">
+                에이전트 PC 에서 확인
+              </Text>
+              <Text size="sm" c="dimmed" mb="xs">
+                에이전트가 쓰는 주소로 바꿔 실행하십시오. 첫 줄이 버전, 둘째 줄이 클라이언트가 받는 인가 서버, 셋째 줄이 등록
+                주소입니다. 버전이 비어 있거나 인가 서버·등록 주소가 Keycloak 이면, 그 주소에 응답하는 것은 옛 bbmcp
+                이거나 등록 대행이 꺼진 bbmcp 입니다.
+              </Text>
+              <TextBlock text={probeCommands(oauthTest.data?.resourceUrl || origin)} maxHeight={260} />
+            </div>
+
+            <div>
+              <Text fw={600} mb="xs">
+                등록 없이 연결 (클라이언트 ID 고정)
+              </Text>
+              <Text size="sm" c="dimmed" mb="xs">
+                클라이언트에 MCP 클라이언트 ID 를 고정하면 동적 등록을 아예 하지 않으므로, 서버 버전·설정과 무관하게
+                invalid_client_metadata 가 나지 않습니다.
+              </Text>
+              <TextBlock text={fixedClientExamples(oauthTest.data?.resourceUrl || origin, draft?.mcpClientId || 'bbmcp-mcp')} maxHeight={260} />
+            </div>
+
+            <div>
+              <Group justify="space-between" mb="xs">
+                <Text fw={600}>Keycloak 동적 등록 시험</Text>
+                <Button
+                  size="compact-sm"
+                  variant="default"
+                  loading={registrationTest.isPending}
+                  onClick={() => registrationTest.mutate()}
+                >
+                  시험
+                </Button>
+              </Group>
+              <Text size="sm" c="dimmed">
+                MCP 클라이언트가 보내는 것과 같은 등록 요청을 Keycloak 에 한 번 보내, Keycloak 이 받아 주는지 확인합니다.
+                시험용 클라이언트는 만들어지지 않거나, 만들어지면 즉시 지웁니다.
+              </Text>
+              {registrationTest.error ? <ErrorBlock error={registrationTest.error} /> : null}
+              {registrationTest.data ? <RegistrationResult report={registrationTest.data} /> : null}
+            </div>
+          </Stack>
+        </Section>
+      ) : null}
+
       <Section title="Keycloak 쪽 설정 안내">
         <Text mb="sm">클라이언트를 두 개 만듭니다. 용도가 다르고 보안 등급도 다릅니다.</Text>
         <TableScroll minWidth={720}>
@@ -247,9 +324,11 @@ export function AdminAuthPage() {
                 <Table.Td>Valid redirect URIs</Table.Td>
                 <Table.Td><Code>{origin}/auth/oidc/callback</Code></Table.Td>
                 <Table.Td>
-                  <Code>http://127.0.0.1:*</Code> / <Code>http://localhost:*</Code>
+                  <Code>http://localhost/callback</Code> / <Code>http://127.0.0.1/callback</Code>
                   <Text size="xs" c="dimmed" mt={4}>
-                    MCP 클라이언트는 로컬 루프백 포트로 콜백을 받습니다.
+                    포트 없이 등록하면 클라이언트가 고른 임의 포트가 허용됩니다(Keycloak 26 에서 확인). Keycloak 10 처럼 MCP OAuth
+                    점검이 보안 경고를 내는 구버전에서는 이 방식과 http://localhost:* 같은 와일드카드가 공격자 주소까지 통과하므로,
+                    고정 포트 주소를 정확히 등록하고(예: http://localhost:33333/callback) 클라이언트에 그 포트를 설정하십시오.
                   </Text>
                 </Table.Td>
               </Table.Tr>
@@ -392,6 +471,22 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
         </Alert>
       ) : null}
 
+      {report.keycloakRegisters ? (
+        <Alert color="red" variant="light" icon={<IconAlertTriangle size={20} />} mb="md" title="MCP 클라이언트가 Keycloak 에 직접 등록합니다">
+          게이트웨이 동적 등록 대행이 꺼져 있습니다. Keycloak 13 이하(예: 10)에서는 모든 MCP 클라이언트가
+          invalid_client_metadata 로 실패합니다. 위 설정에서 등록 대행을 켜고 저장하십시오.
+        </Alert>
+      ) : null}
+
+      {report.unsafeRedirects?.length ? (
+        <Alert color="red" variant="light" icon={<IconAlertTriangle size={20} />} mb="md" title="보안: 공격자 주소로 로그인 결과가 갈 수 있습니다">
+          Keycloak 이 <Code>{report.unsafeRedirects[0]}</Code> 로도 로그인 결과를 보냅니다. MCP 클라이언트의 Valid redirect
+          URIs 에서 와일드카드(<Code>http://localhost:*</Code> 등)와 포트 없는 localhost 주소를 지우고, 고정 포트 주소를 정확히
+          등록한 뒤(예: <Code>http://localhost:33333/callback</Code>) 클라이언트에 그 포트를 설정하십시오(Claude Code:{' '}
+          <Code>--callback-port 33333</Code>).
+        </Alert>
+      ) : null}
+
       {report.warnings?.length ? (
         <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={20} />} mb="md" title="확인하십시오">
           <Stack gap={4}>
@@ -406,6 +501,10 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
 
       <StatList
         items={[
+          {
+            label: '실행 중인 버전',
+            value: report.version ? `v${report.version.version} (${report.version.commit.slice(0, 7)})` : '—',
+          },
           { label: '리소스 URL', value: report.resourceUrl },
           { label: '클라이언트에 알리는 인가 서버', value: report.advertisedAuthorizationServer || '—' },
           { label: 'Keycloak Issuer', value: report.issuer || '—' },
@@ -413,8 +512,8 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
           { label: '토큰 엔드포인트', value: as.tokenEndpoint || '—' },
           { label: 'JWKS', value: as.jwksUri || '—' },
           {
-            label: 'Keycloak 동적 등록',
-            value: report.keycloakSupportsDynamicRegistration ? '지원' : '미지원',
+            label: 'Keycloak 등록 엔드포인트',
+            value: report.keycloakSupportsDynamicRegistration ? '있음 (받아 주는지는 아래 시험으로 확인)' : '없음',
           },
           { label: '게이트웨이 등록 대행', value: report.gatewayRegistrationEndpoint || '사용 안 함' },
           { label: 'MCP 클라이언트 ID', value: report.mcpClientId || '미설정' },
@@ -431,9 +530,11 @@ function OAuthReport({ report }: { report: MCPOAuthReport }) {
       {report.loopbackRedirectUris?.length ? (
         <Alert variant="light" color="bbblue" mt="lg" title="MCP 공개 클라이언트에 할 설정">
           <Text size="sm" mb="sm">
-            MCP 클라이언트는 매번 다른 루프백 포트로 콜백을 받습니다. 아래 와일드카드를 Keycloak 공개
-            클라이언트의 Valid redirect URIs 에 넣지 않으면 로그인 창에서
-            <Code>Invalid parameter: redirect_uri</Code> 가 납니다.
+            MCP 클라이언트는 매번 다른 루프백 포트로 콜백을 받습니다. 아래 주소를 포트 없이 Keycloak 공개
+            클라이언트의 Valid redirect URIs 에 넣으면 임의 포트가 허용됩니다. 없으면 로그인 창에서
+            <Code>Invalid parameter: redirect_uri</Code> 가 납니다. 이 점검이 보안 경고를 낸다면(Keycloak 10 등 구버전) 포트 없는
+            주소와 와일드카드를 지우고, 고정 포트 주소(예: <Code>http://localhost:33333/callback</Code>)를 정확히 등록한 뒤 클라이언트에
+            그 포트를 설정하십시오(Claude Code: <Code>--callback-port 33333</Code>).
           </Text>
           <Stack gap={6}>
             {report.loopbackRedirectUris.map((uri) => (
@@ -478,7 +579,9 @@ function RedirectCheckLine({ check }: { check: RedirectCheck }) {
     ? ['gray', '확인 불가']
     : check.accepted
       ? ['teal', 'Keycloak 허용']
-      : ['red', 'Keycloak 거부']
+      : check.clientMissing
+        ? ['red', '클라이언트 없음']
+        : ['red', 'Keycloak 거부']
   return (
     <Stack gap={4} mt={6}>
       <Group gap="xs" wrap="nowrap">
@@ -492,7 +595,12 @@ function RedirectCheckLine({ check }: { check: RedirectCheck }) {
           {check.error}
         </Text>
       ) : null}
-      {!check.accepted && !check.error ? (
+      {!check.accepted && !check.error && check.clientMissing ? (
+        <Text size="xs" c="dimmed">
+          Keycloak: {check.detail}. Keycloak 에 이 Client ID 의 공개 클라이언트가 없습니다.
+        </Text>
+      ) : null}
+      {!check.accepted && !check.error && !check.clientMissing ? (
         <>
           <Text size="xs" c="dimmed">
             Keycloak: {check.detail}. 아래 값을 Valid redirect URIs 에 추가하십시오.
@@ -501,5 +609,121 @@ function RedirectCheckLine({ check }: { check: RedirectCheck }) {
         </>
       ) : null}
     </Stack>
+  )
+}
+
+/** Commands an operator runs on the agent's PC, reading what a client reads. */
+function probeCommands(base: string): string {
+  return [
+    '# PowerShell',
+    `$u = "${base}"`,
+    `$r = Invoke-WebRequest -UseBasicParsing "$u/.well-known/oauth-protected-resource/mcp"`,
+    `"version: " + $r.Headers["X-Bbmcp-Version"]`,
+    `$as = ($r.Content | ConvertFrom-Json).authorization_servers[0]; "authorization server: $as"`,
+    `"registration: " + (Invoke-RestMethod "$as/.well-known/openid-configuration").registration_endpoint`,
+    '',
+    '# bash',
+    `u=${base}`,
+    `curl -sD - "$u/.well-known/oauth-protected-resource/mcp" | grep -i -E 'x-bbmcp-version|authorization_servers'`,
+    `as=$(curl -s "$u/.well-known/oauth-protected-resource/mcp" | sed -E 's/.*"authorization_servers":\\["([^"]*)".*/\\1/')`,
+    `curl -s "$as/.well-known/openid-configuration" | grep -o '"registration_endpoint":"[^"]*"'`,
+  ].join('\n')
+}
+
+/** Client configurations that skip dynamic registration altogether. */
+function fixedClientExamples(base: string, clientId: string): string {
+  return [
+    '# Claude Code',
+    `claude mcp add --transport http --client-id ${clientId} bbmcp ${base}/mcp`,
+    '',
+    '# Keycloak 10 등 고정 포트가 필요한 경우: http://localhost:33333/callback 을 정확히 등록하고',
+    `claude mcp add --transport http --client-id ${clientId} --callback-port 33333 bbmcp ${base}/mcp`,
+    '',
+    '# .mcp.json 또는 Claude Code 설정 (사용자 범위)',
+    JSON.stringify({ mcpServers: { bbmcp: { type: 'http', url: `${base}/mcp`, oauth: { clientId, callbackPort: 33333 } } } }, null, 2),
+  ].join('\n')
+}
+
+function TraceTable({ trace }: { trace: DiscoveryTrace }) {
+  if (!trace.events.length) {
+    return (
+      <Text size="sm" mt="xs">
+        v{trace.version.version} 이 {new Date(trace.since).toLocaleString()} 에 시작한 뒤 기록된 탐색이 없습니다.
+      </Text>
+    )
+  }
+  return (
+    <TableScroll>
+      <Table striped mt="xs" fz="xs">
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>시각</Table.Th>
+            <Table.Th>단계</Table.Th>
+            <Table.Th>상태</Table.Th>
+            <Table.Th>주소{trace.trustProxyHeaders ? ' (프록시 헤더 기준)' : ''}</Table.Th>
+            <Table.Th>클라이언트</Table.Th>
+            <Table.Th>내용</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {trace.events.map((e, i) => (
+            <Table.Tr key={`${e.at}-${i}`}>
+              <Table.Td>{new Date(e.at).toLocaleTimeString()}</Table.Td>
+              <Table.Td>{traceKindLabel[e.kind] ?? e.kind}</Table.Td>
+              <Table.Td>{e.status}</Table.Td>
+              <Table.Td>{e.ip}</Table.Td>
+              <Table.Td style={{ maxWidth: 220, overflowWrap: 'anywhere' }}>{e.userAgent}</Table.Td>
+              <Table.Td style={{ maxWidth: 320, overflowWrap: 'anywhere' }}>{e.detail}</Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </TableScroll>
+  )
+}
+
+const traceKindLabel: Record<string, string> = {
+  challenge: '401 인증 요구',
+  'resource-metadata': '보호 리소스 메타데이터',
+  'server-metadata': '인가 서버 메타데이터',
+  register: '클라이언트 등록',
+  'unknown-well-known': '알 수 없는 well-known',
+}
+
+function RegistrationResult({ report }: { report: KeycloakRegistrationReport }) {
+  const check = report.check
+  if (!check) {
+    return (
+      <Alert color="red" variant="light" mt="xs">
+        {report.error}
+      </Alert>
+    )
+  }
+  const [color, title] = check.problem
+    ? ['red', '확인 필요']
+    : check.acceptsPublicClients
+      ? ['teal', 'Keycloak 이 MCP 클라이언트 등록을 받아 줍니다']
+      : ['orange', 'Keycloak 이 MCP 클라이언트 등록을 받지 않습니다']
+  return (
+    <Alert color={color} variant="light" mt="xs" title={title}>
+      <Stack gap={4}>
+        {check.reason ? <Text size="sm">{check.reason}</Text> : null}
+        {check.problem ? <Text size="sm">{check.problem}</Text> : null}
+        <Text size="xs" c="dimmed">
+          {check.endpoint} → {check.status ?? '—'} {check.error ?? ''} {check.detail ?? ''}
+        </Text>
+        {!check.acceptsPublicClients ? (
+          <Text size="sm">
+            그래서 등록 대행을 켜 두어야 합니다. 에이전트에 invalid_client_metadata 가 보인다면, 그 에이전트는 bbmcp 가 아니라
+            Keycloak 에 등록하러 간 것입니다.
+          </Text>
+        ) : null}
+        {report.note ? (
+          <Text size="xs" c="dimmed">
+            {report.note}
+          </Text>
+        ) : null}
+      </Stack>
+    </Alert>
   )
 }

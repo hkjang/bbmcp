@@ -28,6 +28,19 @@ const keycloakErrorPage = `<div id="kc-error-message">
             <p class="instruction">Invalid parameter: redirect_uri</p>
         </div>`
 
+// keycloakClientNotFoundPage is the same page for an unknown client, in the
+// realm's language (here Korean, as Keycloak 26 ships it).
+const keycloakClientNotFoundPage = `<p class="instruction">클라이언트를 찾을 수 없습니다.</p>`
+
+// allowedByKeycloak is how a current Keycloak decides: user info in the
+// redirect URI never matches, and otherwise allow decides (nil: anything).
+func allowedByKeycloak(redirect string, allow func(string) bool) bool {
+	if u, err := url.Parse(redirect); err == nil && u.User != nil {
+		return false
+	}
+	return allow == nil || allow(redirect)
+}
+
 // fakeKeycloakWith is fakeKeycloak whose authorization endpoint, like
 // Keycloak, sends the browser back only to redirect URIs allow accepts and
 // shows its error page for any other. A nil allow accepts all of them.
@@ -38,7 +51,13 @@ func fakeKeycloakWith(t *testing.T, withDCR bool, allow func(redirectURI string)
 	mux.HandleFunc("/protocol/openid-connect/auth", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		redirect := q.Get("redirect_uri")
-		if allow != nil && !allow(redirect) {
+		// Like Keycloak, the client is looked up before the redirect URI.
+		if c := q.Get("client_id"); c != "bbmcp-mcp" && c != "bbmcp" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(keycloakClientNotFoundPage))
+			return
+		}
+		if !allowedByKeycloak(redirect, allow) {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(keycloakErrorPage))
@@ -410,7 +429,8 @@ func TestChallengeCarriesResourceMetadataAndError(t *testing.T) {
 	// No credential: the client is told where to start.
 	anon := httptest.NewRequest(http.MethodPost, "https://bbmcp.local/mcp", nil)
 	got := srv.Challenge(anon)
-	if want := `resource_metadata="https://bbmcp.local/.well-known/oauth-protected-resource"`; !contains(got, want) {
+	// The hint names the metadata for the MCP endpoint itself (RFC 9728 §3.3).
+	if want := `resource_metadata="https://bbmcp.local/.well-known/oauth-protected-resource/mcp"`; !contains(got, want) {
 		t.Fatalf("challenge = %q", got)
 	}
 	if contains(got, "invalid_token") {
@@ -560,13 +580,13 @@ func TestMCPOAuthReportListsUrisToRegister(t *testing.T) {
 		t.Errorf("webRedirectUri = %v", body["webRedirectUri"])
 	}
 	loopback, _ := body["loopbackRedirectUris"].([]any)
-	if len(loopback) != 2 || loopback[0] != "http://127.0.0.1:*" {
+	if len(loopback) != 2 || loopback[0] != "http://localhost/callback" {
 		t.Errorf("loopbackRedirectUris = %v", body["loopbackRedirectUris"])
 	}
 }
 
 // onlyLoopbackIP is how a realm set up from the old README looks: the MCP
-// client admits http://127.0.0.1:* and nothing else.
+// client admits 127.0.0.1 callbacks and nothing else.
 func onlyLoopbackIP(redirect string) bool { return strings.HasPrefix(redirect, "http://127.0.0.1:") }
 
 // Claude Code calls back on localhost. A realm that only admits 127.0.0.1
@@ -589,7 +609,7 @@ func TestRegisterClientRefusedWhenKeycloakRejectsRedirect(t *testing.T) {
 		t.Errorf("error = %v", body["error"])
 	}
 	desc, _ := body["error_description"].(string)
-	for _, want := range []string{"http://localhost:*", "Invalid parameter: redirect_uri", "bbmcp-mcp"} {
+	for _, want := range []string{"http://localhost/callback", "Invalid parameter: redirect_uri", "bbmcp-mcp"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("설명에 %q 가 없습니다: %s", want, desc)
 		}
@@ -664,12 +684,12 @@ func TestMCPOAuthDiagnosticFindsRefusedLoopback(t *testing.T) {
 	if ip["accepted"] != true {
 		t.Errorf("127.0.0.1 = %v", ip)
 	}
-	if lh["accepted"] == true || lh["register"] != "http://localhost:*" || lh["detail"] != "Invalid parameter: redirect_uri" {
+	if lh["accepted"] == true || lh["register"] != "http://localhost/callback" || lh["detail"] != "Invalid parameter: redirect_uri" {
 		t.Errorf("localhost = %v", lh)
 	}
 	found := false
 	for _, w := range body["warnings"].([]any) {
-		if text, _ := w.(string); strings.Contains(text, "http://localhost:*") {
+		if text, _ := w.(string); strings.Contains(text, "http://localhost/callback") {
 			found = true
 		}
 	}
@@ -704,11 +724,15 @@ func TestMCPOAuthDiagnosticWarnsWhenKeycloakSendsIssuer(t *testing.T) {
 
 func TestRegistrationForUsesLoopbackWildcard(t *testing.T) {
 	for in, want := range map[string]string{
-		"http://localhost:58023/callback":         "http://localhost:*",
-		"http://127.0.0.1:33418/":                 "http://127.0.0.1:*",
-		"http://[::1]:5000/cb":                    "http://[::1]:*",
-		"https://claude.ai/api/mcp/auth_callback": "https://claude.ai/api/mcp/auth_callback",
-		"cursor://anysphere.cursor-mcp/oauth/cb":  "cursor://anysphere.cursor-mcp/oauth/cb",
+		// Without the port, which Keycloak then lets the client choose; never
+		// a host-level wildcard.
+		"http://localhost:58023/callback": "http://localhost/callback",
+		"http://127.0.0.1:33418/":         "http://127.0.0.1/",
+		"http://[::1]:5000/cb":            "http://[::1]/cb",
+		// Not loopback: an anonymous caller picks these, so nothing is suggested.
+		"https://claude.ai/api/mcp/auth_callback": "",
+		"cursor://anysphere.cursor-mcp/oauth/cb":  "",
+		"http://evil.example/cb":                  "",
 	} {
 		if got := registrationFor(in); got != want {
 			t.Errorf("registrationFor(%q) = %q, want %q", in, got, want)
@@ -749,6 +773,16 @@ func fakeKeycloak10(t *testing.T) (*httptest.Server, string) {
 	})
 	mux.HandleFunc("/auth/realms/bb/protocol/openid-connect/auth", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		if c := q.Get("client_id"); c != "bbmcp-mcp" && c != "bbmcp" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`<p class="instruction">Client not found.</p>`))
+			return
+		}
+		if !allowedByKeycloak(q.Get("redirect_uri"), nil) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(keycloakErrorPage))
+			return
+		}
 		http.Redirect(w, r, q.Get("redirect_uri")+"?error=login_required&state="+url.QueryEscape(q.Get("state")), http.StatusFound)
 	})
 	srv := httptest.NewServer(mux)

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -72,7 +73,12 @@ func newKeycloakStub(t *testing.T, withDCR bool) *keycloakStub {
 	})
 	mux.HandleFunc("/protocol/openid-connect/auth", func(w http.ResponseWriter, r *http.Request) {
 		redirect := r.URL.Query().Get("redirect_uri")
-		if stub.allowRedirect != nil && !stub.allowRedirect(redirect) {
+		if c := r.URL.Query().Get("client_id"); c != "bbmcp-mcp" && c != "bbmcp" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`<p class="instruction">Client not found.</p>`))
+			return
+		}
+		if u, err := url.Parse(redirect); (err == nil && u.User != nil) || (stub.allowRedirect != nil && !stub.allowRedirect(redirect)) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`<p class="instruction">Invalid parameter: redirect_uri</p>`))
 			return
@@ -882,12 +888,101 @@ func TestMCPRegistrationRefusesWhatKeycloakWouldRefuse(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest || reg["error"] != "invalid_redirect_uri" {
 		t.Fatalf("상태 %d: %v", resp.StatusCode, reg)
 	}
-	if desc, _ := reg["error_description"].(string); !strings.Contains(desc, "http://localhost:*") {
+	if desc, _ := reg["error_description"].(string); !strings.Contains(desc, "http://localhost/callback") {
 		t.Errorf("error_description = %q", desc)
 	}
 
 	resp, reg = gw.post(t, "/oauth/register", "", `{"redirect_uris":["http://127.0.0.1:41234/callback"]}`)
 	if resp.StatusCode != http.StatusCreated || reg["client_id"] != "bbmcp-mcp" {
 		t.Fatalf("상태 %d: %v", resp.StatusCode, reg)
+	}
+}
+
+// TestIPAllowlistIgnoresUntrustedForwardingHeaders guards against a caller
+// choosing its own address. chi's RealIP middleware used to rewrite
+// RemoteAddr from X-Real-IP / X-Forwarded-For for everyone, so the allowlist
+// and rate limits honoured those headers even with proxy headers untrusted.
+func TestIPAllowlistIgnoresUntrustedForwardingHeaders(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+
+	get := func(header string) int {
+		req, _ := http.NewRequest(http.MethodGet, gw.srv.URL+"/healthz", nil)
+		if header != "" {
+			req.Header.Set(header, "10.9.9.9")
+		}
+		resp, err := gw.srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	sec := settings.DefaultSecurity()
+	sec.IPAllowlist = []string{"10.9.9.9"}
+	sec.TrustProxyHeaders = false
+	if err := gw.store.Put(gw.ctx, settings.KeySecurity, sec, "test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"X-Real-IP", "X-Forwarded-For", "True-Client-IP"} {
+		if code := get(h); code != http.StatusForbidden {
+			t.Errorf("%s 로 허용 목록을 통과했습니다: %d", h, code)
+		}
+	}
+
+	// Behind a proxy the operator trusts, the forwarded address counts.
+	sec.TrustProxyHeaders = true
+	if err := gw.store.Put(gw.ctx, settings.KeySecurity, sec, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if code := get("X-Forwarded-For"); code != http.StatusOK {
+		t.Errorf("신뢰하는 프록시 헤더를 무시했습니다: %d", code)
+	}
+}
+
+// TestDiscoveryTraceShowsTheClientChain walks the chain an MCP client takes
+// and expects the operator's trace to show each step.
+func TestDiscoveryTraceShowsTheClientChain(t *testing.T) {
+	kc := newKeycloakStub(t, false)
+	gw := newGateway(t, kc)
+	jar := gw.login(t, "admin", "bootstrap-password")
+
+	resp, _ := gw.post(t, "/mcp", "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	hint := between(resp.Header.Get("WWW-Authenticate"), `resource_metadata="`, `"`)
+	if !strings.HasSuffix(hint, "/.well-known/oauth-protected-resource/mcp") {
+		t.Fatalf("hint = %q", hint)
+	}
+	if resp.Header.Get("X-Bbmcp-Version") == "" {
+		t.Error("401 에 버전 헤더가 없습니다")
+	}
+	_, prm := gw.getJSON(t, hint)
+	if prm["resource"] != gw.srv.URL+"/mcp" {
+		t.Errorf("resource = %v", prm["resource"])
+	}
+	gw.getJSON(t, gw.srv.URL+"/.well-known/oauth-authorization-server")
+	gw.post(t, "/oauth/register", "", `{"redirect_uris":["http://127.0.0.1:41234/callback"],"client_name":"chain"}`)
+
+	req, _ := http.NewRequest(http.MethodGet, gw.srv.URL+"/api/admin/mcp-oauth/trace", nil)
+	r2, err := (&http.Client{Jar: jar}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	var out struct {
+		Events []struct {
+			Kind   string `json:"kind"`
+			Status int    `json:"status"`
+		} `json:"events"`
+	}
+	_ = json.NewDecoder(r2.Body).Decode(&out)
+	seen := map[string]int{}
+	for _, e := range out.Events {
+		seen[e.Kind] = e.Status
+	}
+	for kind, status := range map[string]int{"challenge": 401, "resource-metadata": 200, "server-metadata": 200, "register": 201} {
+		if seen[kind] != status {
+			t.Errorf("%s = %d, want %d (%v)", kind, seen[kind], status, out.Events)
+		}
 	}
 }

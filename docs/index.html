@@ -126,7 +126,7 @@
       "step": [
         { "@type": "HowToStep", "position": 1, "name": "이미지 적재", "text": "docker load -i bbmcp-v0.2.8.tar.gz 로 릴리스 이미지를 적재합니다." },
         { "@type": "HowToStep", "position": 2, "name": "환경변수 준비", "text": "DATABASE_URL, BOOTSTRAP_ADMIN, BOOTSTRAP_ADMIN_PASSWORD, ENCRYPTION_KEY 네 개를 설정합니다." },
-        { "@type": "HowToStep", "position": 3, "name": "기동", "text": "docker compose -f deploy/docker-compose.yml up -d 로 PostgreSQL 과 함께 기동합니다." },
+        { "@type": "HowToStep", "position": 3, "name": "기동", "text": "docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d 로 PostgreSQL 과 함께 기동합니다." },
         { "@type": "HowToStep", "position": 4, "name": "관리자 설정", "text": "관리자 콘솔에서 Keycloak, Bitbucket 서비스 계정, 접근 정책, 도구 활성화를 설정합니다." }
       ]
     },

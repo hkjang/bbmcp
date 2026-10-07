@@ -148,6 +148,27 @@ export function TableScroll({ children, minWidth = 720 }: { children: ReactNode;
   )
 }
 
+/** Preformatted text such as shell commands, shown as written. */
+export function TextBlock({ text, maxHeight = 420 }: { text: string; maxHeight?: number }) {
+  return (
+    <Box
+      component="pre"
+      className="bbmcp-code bbmcp-scroll-surface"
+      p="sm"
+      m={0}
+      style={{
+        maxHeight,
+        overflow: 'auto',
+        whiteSpace: 'pre',
+        borderRadius: 'var(--mantine-radius-sm)',
+        background: 'var(--mantine-color-default-hover)',
+      }}
+    >
+      {text}
+    </Box>
+  )
+}
+
 export function JsonBlock({ value, maxHeight = 420 }: { value: unknown; maxHeight?: number }) {
   return (
     <Box

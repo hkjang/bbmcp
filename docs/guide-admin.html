@@ -77,7 +77,8 @@
     <li class="sub"><a href="#keycloak-roles">3.2 역할</a></li>
     <li class="sub"><a href="#silent-sso">3.3 사일런트 SSO</a></li>
     <li class="sub"><a href="#mcp-oauth">3.4 MCP OAuth</a></li>
-    <li class="sub"><a href="#invalid-uri">3.5 Invalid redirect URI 해결</a></li>
+    <li class="sub"><a href="#invalid-client-metadata">3.5 MCP 로그인에서 invalid_client_metadata 가 날 때</a></li>
+    <li class="sub"><a href="#invalid-uri">3.6 Invalid redirect URI 해결</a></li>
     <li><a href="#bitbucket">4. Bitbucket 연결</a></li>
     <li class="sub"><a href="#service-account">4.1 서비스 계정</a></li>
     <li class="sub"><a href="#auth-mode">4.2 인증 모드</a></li>
@@ -247,7 +248,8 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
         <tr><td>PKCE</td><td>선택</td><td><strong>S256 필수</strong></td></tr>
         <tr><td>Valid redirect URIs</td>
             <td><code>https://&lt;bbmcp&gt;/auth/oidc/callback</code></td>
-            <td><code>http://127.0.0.1:*</code>, <code>http://localhost:*</code></td></tr>
+            <td><code>http://localhost/callback</code>, <code>http://127.0.0.1/callback</code> (포트 없이)<br>
+                <small>Keycloak 10 등 구버전: 고정 포트 주소를 정확히, 예 <code>http://localhost:33333/callback</code></small></td></tr>
         <tr><td>Web origins</td><td><code>https://&lt;bbmcp&gt;</code></td><td><code>+</code> 또는 비움</td></tr>
         <tr><td>Exclude Issuer From Authentication Response<br><small>(Advanced 탭, 구버전에는 없음 — 설정 불필요)</small></td>
             <td>Off (기본값)</td><td><strong>On</strong></td></tr>
@@ -255,15 +257,29 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
     </table>
   </div>
   <p>
-    MCP 클라이언트는 루프백 포트로 콜백을 받기 때문에 리다이렉트 URI 에 와일드카드 포트가 필요합니다.
-    클라이언트마다 <code>127.0.0.1</code> 과 <code>localhost</code> 중 하나를 쓰므로(Claude Code 는
-    <code>localhost</code>) 둘 다 등록하십시오.
+    MCP 클라이언트는 매번 다른 루프백 포트로 콜백을 받습니다. 루프백 주소를 <strong>포트 없이</strong> 등록하면
+    Keycloak 이 임의 포트를 허용합니다(Keycloak 10 은 <code>localhost</code> 만, 26 은 둘 다). 클라이언트마다
+    <code>127.0.0.1</code> 과 <code>localhost</code> 중 하나를 쓰므로(Claude Code 는 <code>localhost</code>) 둘 다 등록하십시오.
+  </p>
+  <div class="note warn">
+    <p>
+      <strong>Keycloak 10 에서는 와일드카드도, 포트 없는 localhost 도 쓰지 마십시오.</strong> 예전 안내의
+      <code>http://127.0.0.1:*</code>, <code>http://localhost:*</code> 는 문자열 접두사로 비교되고, 포트 없는
+      <code>http://localhost/callback</code> 은 Keycloak 10 이 localhost 의 ':' 부터 다음 '/' 까지를 포트로 보고 지운 뒤 비교합니다.
+      그래서 둘 다 <code>http://localhost:@attacker.example/callback</code> 같은 주소를 받습니다. 브라우저는 '@' 뒤의 호스트로 가므로,
+      공격자가 만든 링크로 로그인한 사람의 인증 코드가 공격자에게 갑니다(Keycloak 26.4 는 셋 다 막습니다). Keycloak 10 에서는 고정 포트
+      주소를 정확히 등록하고(예: <code>http://localhost:33333/callback</code>) 클라이언트에 그 포트를 설정하십시오(Claude Code:
+      <code>--callback-port 33333</code> 또는 설정의 <code>oauth.callbackPort</code>). <span class="kbd">MCP OAuth 점검</span> 이 이 상태를
+      직접 시험해 빨간 경고로 알려 줍니다.
+    </p>
+  </div>
+  <p>
     그다음 bbmcp 관리 콘솔 → 인증 → <strong>MCP OAuth</strong> 에서 클라이언트 ID 를 입력하고
     <span class="kbd">MCP OAuth 점검</span> 을 누르십시오.
   </p>
 
   <figure>
-    <img src="screenshots/admin-auth-mcp-oauth.png" alt="인증 화면의 MCP OAuth 설정과 점검 결과. 인가·토큰·JWKS 엔드포인트와 함께, Keycloak 에 실제로 확인한 리다이렉트 URI 결과가 표시되고 거부된 localhost 콜백에 추가할 값 http://localhost:* 가 복사 버튼과 함께 나온다." loading="lazy" width="1440" height="900">
+    <img src="screenshots/admin-auth-mcp-oauth.png" alt="인증 화면의 MCP OAuth 설정과 점검 결과. 실행 중인 버전, 인가·토큰·JWKS 엔드포인트, Keycloak 에 실제로 확인한 리다이렉트 URI 결과와 보안 경고가 표시된다." loading="lazy" width="1440" height="900">
     <figcaption>MCP OAuth 점검 — Keycloak 에 직접 물어, 빠진 리다이렉트 URI 와 추가할 값을 보여 줍니다</figcaption>
   </figure>
 
@@ -324,8 +340,74 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
     "bbmcp": { "type": "http", "url": "https://bbmcp.company.local/mcp" }
   }
 }</code></pre>
+  <p>
+    클라이언트 ID 를 고정하면 동적 등록을 아예 하지 않습니다. 서버 버전이나 등록 대행 설정과 무관하게 연결되므로,
+    문제를 좁히는 동안 쓰기 좋습니다 (Claude Code 로 Keycloak 10 에서 확인).
+  </p>
+  <pre><code>claude mcp add --transport http --client-id bbmcp-mcp bbmcp https://bbmcp.company.local/mcp
 
-  <h3 id="invalid-uri">3.5 Invalid redirect URI 해결</h3>
+# Keycloak 10 (고정 포트, http://localhost:33333/callback 을 정확히 등록)
+claude mcp add --transport http --client-id bbmcp-mcp --callback-port 33333 bbmcp https://bbmcp.company.local/mcp
+
+# 또는 설정 파일 (사용자 범위에 두십시오)
+{ "mcpServers": { "bbmcp": { "type": "http", "url": "https://bbmcp.company.local/mcp",
+                             "oauth": { "clientId": "bbmcp-mcp" } } } }</code></pre>
+
+  <h3 id="invalid-client-metadata">3.5 MCP 로그인에서 invalid_client_metadata 가 날 때</h3>
+  <p>
+    bbmcp 는 이 오류를 내지 않습니다. 이 오류는 <strong>Keycloak 의 동적 등록</strong>이 냅니다. 즉 에이전트가 bbmcp 가 아니라
+    Keycloak 에 등록하러 간 것입니다. MCP 클라이언트는 공개 클라이언트(<code>token_endpoint_auth_method: none</code>)로
+    등록하는데, Keycloak 13 이하(예: 10)는 이것을 어떤 설정으로도 받지 않습니다(Keycloak 14 부터 지원). 그래서 bbmcp 가
+    등록을 맡아 미리 만든 <code>bbmcp-mcp</code> 를 내려 줍니다.
+  </p>
+  <p><strong>바로 연결하기</strong> — 위의 클라이언트 ID 고정 설정을 쓰십시오. 등록 단계가 없어 이 오류가 생기지 않습니다.</p>
+  <p><strong>원인 찾기</strong> — 에이전트 PC 에서, 에이전트에 넣은 주소로 실행합니다 (관리 콘솔 → 인증 → MCP 클라이언트 진단에도 있습니다).</p>
+  <pre><code># PowerShell
+$u = "https://bbmcp.company.local"
+$r = Invoke-WebRequest -UseBasicParsing "$u/.well-known/oauth-protected-resource/mcp"
+"version: " + $r.Headers["X-Bbmcp-Version"]
+$as = ($r.Content | ConvertFrom-Json).authorization_servers[0]; "authorization server: $as"
+"registration: " + (Invoke-RestMethod "$as/.well-known/openid-configuration").registration_endpoint</code></pre>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>결과</th><th>뜻</th><th>조치</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>version</code> 이 비어 있거나 기대한 버전이 아님</td>
+          <td>그 주소에 응답하는 것은 예전 bbmcp 입니다. 이미지만 적재하고 <code>up -d</code> 하면 <code>deploy/.env</code> 의 예전 <code>BBMCP_VERSION</code> 으로 예전 이미지가 계속 돕니다</td>
+          <td><code>bash deploy/upgrade.sh</code> 로 업그레이드하십시오 (15장). 셸이나 systemd 에 <code>BBMCP_VERSION</code> 이 내보내져 있지 않은지도 보십시오</td>
+        </tr>
+        <tr>
+          <td><code>authorization server</code> 가 Keycloak 주소</td>
+          <td>게이트웨이 동적 등록 대행이 꺼져 있습니다. v0.2.6 부터 꺼짐은 "클라이언트를 Keycloak 동적 등록으로 보냄"을 뜻합니다</td>
+          <td>인증 → MCP OAuth 에서 켜고 저장하십시오. v0.2.9 는 그 전에 저장된 꺼짐 값을 한 번 자동으로 켭니다(감사 로그 <code>settings.migrate</code>)</td>
+        </tr>
+        <tr>
+          <td>셋 다 bbmcp 인데도 오류</td>
+          <td>에이전트가 bbmcp 의 메타데이터를 읽지 않고, 기억해 둔 예전 인가 서버나 설정에 고정된 Keycloak 을 씁니다</td>
+          <td>MCP 클라이언트 진단의 <strong>탐색 기록</strong>에 401 만 있고 그 뒤가 없으면 이 경우입니다. 아래 표대로 클라이언트를 초기화하십시오</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>클라이언트</th><th>저장된 인증 정보 초기화</th></tr></thead>
+      <tbody>
+        <tr><td>Claude Code</td><td><code>/mcp</code> → 서버 → <em>Re-authenticate</em> 또는 <em>Clear authentication</em>. 또는 <code>claude mcp remove bbmcp</code> 후 다시 추가. 설정에 <code>oauth.authServerMetadataUrl</code> 이 Keycloak 을 가리키면 지우십시오</td></tr>
+        <tr><td>VS Code (Copilot 에이전트 모드)</td><td><em>MCP: List Servers</em> → 서버 → <em>Restart</em>, 또는 <em>Developer: Reload Window</em>. 등록 정보까지 지우려면 <em>Authentication: Remove Dynamic Authentication Providers</em></td></tr>
+        <tr><td>Cline</td><td>MCP 서버 화면에서 다시 인증(대화형 인증이 저장된 탐색 정보를 지웁니다)</td></tr>
+        <tr><td>vibe-code</td><td>저장된 탐색 정보를 스스로 지우지 않습니다. MCP 설정에서 서버 이름을 바꾸면 새로 탐색합니다</td></tr>
+        <tr><td>서버형 에이전트 플랫폼</td><td>그 플랫폼의 연결 설정에서 OAuth 연결을 지우고 다시 연결하십시오(사용자 PC 를 초기화해도 소용없습니다)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    등록 대행이 켜진 bbmcp 가 등록을 거절할 때는 <code>invalid_redirect_uri</code> 를 돌려주며, 일부 에이전트는 이것도
+    "client metadata" 오류로 보여 줍니다. 감사 로그의 <code>oauth.register</code> 실패 기록에 이유가 남습니다.
+  </p>
+
+  <h3 id="invalid-uri">3.6 Invalid redirect URI 해결</h3>
   <p>
     Keycloak 은 리다이렉트 URI 를 <strong>문자열 그대로</strong> 비교합니다. 한 글자라도 다르면
     <code>Invalid parameter: redirect_uri</code> 로 거부합니다. bbmcp 는 보내는 값을 항상 정규화하고,
@@ -360,12 +442,12 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
         <tr>
           <td>MCP 클라이언트 로그인 창에서 <code>Invalid parameter: redirect_uri</code>, 또는 연결 시 <code>invalid_redirect_uri</code></td>
           <td>클라이언트의 콜백 주소가 공개 클라이언트에 없음. Claude Code 는 <code>http://localhost:&lt;포트&gt;/callback</code> 을 쓰므로 <code>127.0.0.1</code> 만 등록하면 실패합니다</td>
-          <td><code>http://127.0.0.1:*</code> 와 <code>http://localhost:*</code> 를 <strong>둘 다</strong> 등록하십시오. v0.2.7 부터는 등록 단계에서 Keycloak 에 확인해 추가할 값을 클라이언트에 보여 주고, <span class="kbd">MCP OAuth 점검</span> 이 같은 확인 결과를 표시합니다</td>
+          <td><code>http://localhost/callback</code> 과 <code>http://127.0.0.1/callback</code> 을 포트 없이 <strong>둘 다</strong> 등록하십시오(Keycloak 10 은 고정 포트, 3.4 참고). v0.2.7 부터는 등록 단계에서 Keycloak 에 확인해 추가할 값을 클라이언트에 보여 주고, <span class="kbd">MCP OAuth 점검</span> 이 같은 확인 결과를 표시합니다</td>
         </tr>
         <tr>
           <td>MCP 연결 시 <code>invalid_client_metadata</code>, <code>Policy 'Trusted Hosts' rejected request</code>, <code>insufficient_scope</code></td>
           <td>클라이언트가 Keycloak 의 익명 동적 등록으로 감 (v0.2.5 이하, 또는 등록 대행을 끈 경우)</td>
-          <td>v0.2.6 이상에서 <strong>게이트웨이 동적 등록 대행</strong>을 켜십시오. 이미 실패했던 클라이언트는 저장된 bbmcp 인증 정보를 지우고 다시 연결하십시오 (예: Claude Code 는 <code>claude mcp remove</code> 후 다시 추가)</td>
+          <td>3.5 의 순서대로 확인하십시오. 바로 연결하려면 클라이언트 ID 를 <code>bbmcp-mcp</code> 로 고정하십시오</td>
         </tr>
         <tr>
           <td>로그인 후 <code>Authorization response iss mismatch</code></td>
@@ -655,11 +737,16 @@ bbmcp_mcp_sessions_active</code></pre>
 pg_dump "$DATABASE_URL" --format=custom --file=bbmcp-$(date +%Y%m%d).dump
 # + ENCRYPTION_KEY
 
-# 업그레이드
+# 업그레이드 (릴리스의 bbmcp-deploy-v&lt;버전&gt;.tar.gz 에 들어 있습니다)
+bash deploy/upgrade.sh bbmcp-v0.2.8.tar.gz
+#  이미지 적재 → deploy/.env 의 BBMCP_VERSION 변경 → 재기동 → 새 버전 기동 확인
+#  마이그레이션은 기동 시 자동 적용됩니다
+
+# 수동으로 할 때: 이미지만 적재하고 up -d 하면 예전 버전이 계속 돕니다
 docker load -i bbmcp-v0.2.8.tar.gz
-# deploy/.env 의 BBMCP_VERSION 을 올린 뒤
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
-# 마이그레이션은 기동 시 자동 적용됩니다</code></pre>
+# deploy/.env 의 BBMCP_VERSION 을 먼저 올리고
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env config | grep 'image: bbmcp'   # 새 버전인지 확인
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d</code></pre>
   <div class="note">
     <p>
       Bitbucket 자체를 업그레이드하는 경우, bbmcp 는 <code>BitbucketAdapter</code> 뒤에서만 Bitbucket 을

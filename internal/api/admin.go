@@ -30,6 +30,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/settings/{group}", s.getSettings)
 	r.Put("/settings/{group}", s.putSettings)
 	r.Post("/test/{target}", s.testTarget)
+	r.Get("/mcp-oauth/trace", s.mcpOAuthTrace)
 
 	r.Get("/users", s.listUsers)
 	r.Post("/users", s.createUser)
@@ -432,6 +433,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// the string bbmcp sends matches what they registered in Keycloak.
 		next.ClientID = strings.TrimSpace(next.ClientID)
 		next.MCPClientID = strings.TrimSpace(next.MCPClientID)
+		// Saved under the current meaning of the registration switch, so the
+		// startup migration must not undo it.
+		next.MCPRegistrationReviewed = true
 		for _, field := range []struct {
 			label  string
 			target *string
@@ -732,6 +736,9 @@ func (s *Server) testTarget(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case check.Error != "":
 			warnings = append(warnings, "Redirect URI 를 Keycloak 에 확인하지 못했습니다: "+check.Error)
+		case check.ClientMissing:
+			out["ok"] = false
+			out["error"] = fmt.Sprintf("Keycloak 에 Client ID %s 가 없습니다 (Keycloak: %s). Client ID 를 확인하십시오.", kc.ClientID, check.Detail)
 		case !check.Accepted:
 			out["ok"] = false
 			out["error"] = fmt.Sprintf("Keycloak 이 Redirect URI %s 를 거부합니다 (Keycloak: %s). "+
@@ -770,6 +777,39 @@ func (s *Server) testTarget(w http.ResponseWriter, r *http.Request) {
 
 	case "mcp-oauth":
 		s.testMCPOAuth(w, r)
+
+	case "keycloak-registration":
+		// Sends one anonymous registration request to Keycloak, the one an MCP
+		// client sends, so it runs only when an operator asks for it.
+		kc, err := s.Store.Keycloak(ctx)
+		if err != nil || kc.Issuer == "" {
+			httpx.JSON(w, http.StatusOK, map[string]any{"ok": false, "error": "Keycloak Issuer 가 설정되지 않았습니다"})
+			return
+		}
+		meta, err := s.fetchASMetadata(ctx, kc)
+		if err != nil {
+			httpx.JSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		endpoint, _ := meta["registration_endpoint"].(string)
+		check := checkKeycloakRegistration(ctx, kc, endpoint)
+		sec, _ := s.Store.Security(ctx)
+		s.Audit.Write(ctx, audit.Entry{
+			Category: audit.CatAdmin,
+			Action:   "test.keycloak-registration",
+			Success:  check.Problem == "",
+			IP:       httpx.ClientIP(r, sec.TrustProxyHeaders),
+			Message:  "Keycloak 동적 등록 시험",
+			Detail:   map[string]any{"endpoint": endpoint, "accepts": check.AcceptsPublicClients, "createdClientId": check.CreatedClientID, "deleted": check.Deleted},
+		})
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"ok":    check.Problem == "",
+			"check": check,
+			// Trusted Hosts judges the caller's address; only the refusal of
+			// public clients outright is the same from every machine.
+			"note": "이 결과는 bbmcp 서버 주소에서 보낸 요청에 대한 Keycloak 의 답입니다. 정책 거부(Trusted Hosts 등)는 클라이언트 PC 에서 다를 수 있고, " +
+				"'공개 클라이언트 등록을 받지 않음'은 어디서 보내도 같습니다.",
+		})
 
 	case "ai":
 		reply, err := s.AI.Test(ctx)
@@ -1378,3 +1418,19 @@ func (s *Server) listMCPSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 var _ = identity.ErrUnmapped
+
+// mcpOAuthTrace returns the OAuth discovery steps this process has seen since
+// it started, newest first.
+func (s *Server) mcpOAuthTrace(w http.ResponseWriter, r *http.Request) {
+	sec, _ := s.Store.Security(r.Context())
+	events := []traceEvent{}
+	if s.trace != nil {
+		events = s.trace.snapshot()
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"since":             s.booted,
+		"version":           version.Current(),
+		"trustProxyHeaders": sec.TrustProxyHeaders,
+		"events":            events,
+	})
+}

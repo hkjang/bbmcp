@@ -90,6 +90,22 @@ func run() error {
 	if err := registry.Sync(ctx); err != nil {
 		return err
 	}
+	if changed, err := store.MigrateMCPRegistration(ctx, "system:migration"); err != nil {
+		slog.Warn("MCP 동적 등록 대행 설정을 점검하지 못했습니다", "error", err)
+	} else if changed {
+		const msg = "MCP 동적 등록 대행을 한 번 다시 켰습니다. 꺼짐은 'MCP 클라이언트를 Keycloak 동적 등록으로 보냄'을 뜻하는데(v0.2.6 부터), " +
+			"이 값은 v0.2.9 이전에 저장되어 어느 뜻으로 고른 것인지 알 수 없습니다. Keycloak 13 이하는 MCP 클라이언트 등록을 invalid_client_metadata 로 거부합니다. " +
+			"이제 클라이언트에는 bbmcp 가 인가 서버로 알려지므로, Keycloak 이 로그인 응답에 iss 를 붙이면 MCP 클라이언트의 'Exclude Issuer From Authentication Response' 를 켜십시오(MCP OAuth 점검이 알려 줍니다). " +
+			"의도한 설정이면 관리 콘솔에서 다시 끄십시오."
+		slog.Warn(msg)
+		auditLog.Write(ctx, audit.Entry{
+			Category: audit.CatAdmin,
+			Action:   "settings.migrate",
+			Success:  true,
+			Message:  msg,
+			Detail:   map[string]any{"setting": "keycloak.mcpAllowDynamicRegistration", "from": false, "to": true},
+		})
+	}
 	slog.Info("초기화 완료", "bootstrapAdmin", cfg.BootstrapAdmin)
 
 	authSvc := &auth.Service{

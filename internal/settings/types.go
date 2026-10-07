@@ -47,6 +47,10 @@ type Keycloak struct {
 	MCPScopes        []string `json:"mcpScopes"`
 	MCPRequiredScope string   `json:"mcpRequiredScope"`
 	MCPAllowDCR      bool     `json:"mcpAllowDynamicRegistration"`
+	// MCPRegistrationReviewed records that MCPAllowDCR was set or kept under
+	// its current meaning (since v0.2.6: off sends MCP clients to Keycloak's
+	// own registration). Values stored before that are migrated once.
+	MCPRegistrationReviewed bool `json:"mcpRegistrationReviewed,omitempty"`
 }
 
 // MCPAudienceSet returns the client identifiers an MCP access token may name,

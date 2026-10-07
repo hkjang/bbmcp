@@ -307,7 +307,46 @@ export interface RedirectCheck {
   detail?: string
   register?: string
   sendsIssuer?: boolean
+  clientMissing?: boolean
   error?: string
+}
+
+/** What Keycloak's anonymous dynamic registration does with an MCP client. */
+export interface KeycloakRegistrationCheck {
+  endpoint: string
+  acceptsPublicClients: boolean
+  status?: number
+  error?: string
+  detail?: string
+  reason?: string
+  problem?: string
+  createdClientId?: string
+  deleted?: boolean
+}
+
+export interface KeycloakRegistrationReport {
+  ok: boolean
+  error?: string
+  check?: KeycloakRegistrationCheck
+  note?: string
+}
+
+export interface DiscoveryTraceEvent {
+  at: string
+  kind: string
+  method: string
+  path: string
+  status: number
+  ip: string
+  userAgent: string
+  detail?: string
+}
+
+export interface DiscoveryTrace {
+  since: string
+  version: VersionInfo
+  trustProxyHeaders: boolean
+  events: DiscoveryTraceEvent[]
 }
 
 export interface KeycloakTestReport {
@@ -329,6 +368,8 @@ export interface KeycloakTestReport {
 }
 
 export interface MCPOAuthReport {
+  version?: VersionInfo
+  keycloakRegisters?: boolean
   webRedirectUri?: string
   loopbackRedirectUris?: string[]
   ok: boolean
@@ -339,6 +380,7 @@ export interface MCPOAuthReport {
   authorizationServer?: Record<string, string>
   advertisedAuthorizationServer?: string
   redirectChecks?: RedirectCheck[]
+  unsafeRedirects?: string[]
   keycloakSupportsDynamicRegistration: boolean
   gatewayRegistrationEndpoint?: string
   mcpClientId: string

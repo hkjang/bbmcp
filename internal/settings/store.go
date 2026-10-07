@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,12 +19,23 @@ type Store struct {
 	sealer *crypto.Sealer
 
 	mu    sync.RWMutex
-	cache map[string]json.RawMessage
+	cache map[string]cached
 }
+
+// cached is one group as read from the database.
+type cached struct {
+	body json.RawMessage
+	at   time.Time
+}
+
+// cacheTTL bounds how long a process serves a group without re-reading it.
+// Put refreshes only the process that saved; with more than one gateway on
+// the same database, the others pick the change up within this window.
+const cacheTTL = 30 * time.Second
 
 // NewStore builds a settings store.
 func NewStore(pool *pgxpool.Pool, sealer *crypto.Sealer) *Store {
-	return &Store{pool: pool, sealer: sealer, cache: map[string]json.RawMessage{}}
+	return &Store{pool: pool, sealer: sealer, cache: map[string]cached{}}
 }
 
 // Sealer exposes the shared sealer for callers that need to encrypt a field.
@@ -32,22 +44,27 @@ func (s *Store) Sealer() *crypto.Sealer { return s.sealer }
 // raw loads a group's JSON, consulting the cache first.
 func (s *Store) raw(ctx context.Context, key string) (json.RawMessage, error) {
 	s.mu.RLock()
-	if v, ok := s.cache[key]; ok {
-		s.mu.RUnlock()
-		return v, nil
-	}
+	v, cachedOK := s.cache[key]
 	s.mu.RUnlock()
+	if cachedOK && time.Since(v.at) < cacheTTL {
+		return v.body, nil
+	}
 
 	var body []byte
 	err := s.pool.QueryRow(ctx, `SELECT value_json FROM settings WHERE key=$1`, key).Scan(&body)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
+		body = nil
+	} else if err != nil {
+		// A failed refresh keeps the last known settings. Falling back to the
+		// defaults instead would, for one, drop an IP allowlist while the
+		// database is briefly unavailable.
+		if cachedOK {
+			return v.body, nil
+		}
 		return nil, err
 	}
 	s.mu.Lock()
-	s.cache[key] = body
+	s.cache[key] = cached{body: body, at: time.Now()}
 	s.mu.Unlock()
 	return body, nil
 }
@@ -85,7 +102,7 @@ func (s *Store) Put(ctx context.Context, key string, value any, actor string) er
 		return err
 	}
 	s.mu.Lock()
-	s.cache[key] = body
+	s.cache[key] = cached{body: body, at: time.Now()}
 	s.mu.Unlock()
 	return nil
 }
@@ -95,7 +112,7 @@ func (s *Store) Invalidate(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if key == "" {
-		s.cache = map[string]json.RawMessage{}
+		s.cache = map[string]cached{}
 		return
 	}
 	delete(s.cache, key)
@@ -139,4 +156,34 @@ func (s *Store) KeyPolicy(ctx context.Context) (KeyPolicy, error) {
 }
 func (s *Store) MCP(ctx context.Context) (MCP, error) {
 	return load(ctx, s, KeyMCP, DefaultMCP())
+}
+
+// MigrateMCPRegistration turns MCP registration proxying back on, once, for
+// Keycloak settings saved before this marker existed, and reports whether it
+// did.
+//
+// Up to v0.2.5 the switch only decided whether this gateway answered
+// /oauth/register; MCP clients were sent to Keycloak either way. Since v0.2.6
+// off means "send MCP clients to Keycloak's own registration", which Keycloak
+// 13 and older refuse for every MCP client (invalid_client_metadata). Nothing
+// recorded which meaning a stored "off" was chosen under, including values
+// saved by v0.2.6 to v0.2.8, so it is reset once and the operator can turn
+// it off again. Settings saved from now on carry MCPRegistrationReviewed and
+// are left alone.
+func (s *Store) MigrateMCPRegistration(ctx context.Context, actor string) (bool, error) {
+	body, err := s.raw(ctx, KeyKeycloak)
+	if err != nil || len(body) == 0 {
+		return false, err
+	}
+	kc := DefaultKeycloak()
+	if err := json.Unmarshal(body, &kc); err != nil {
+		return false, err
+	}
+	if kc.MCPRegistrationReviewed {
+		return false, nil
+	}
+	changed := !kc.MCPAllowDCR
+	kc.MCPAllowDCR = true
+	kc.MCPRegistrationReviewed = true
+	return changed, s.Put(ctx, KeyKeycloak, kc, actor)
 }
