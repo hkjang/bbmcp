@@ -1,7 +1,7 @@
 # bbmcp 오프라인 배포용 구성.
 #
 # 새로 설치:
-#   docker load -i bbmcp-v0.2.8.tar.gz
+#   docker load -i bbmcp-v0.2.9.tar.gz
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 #
 # 업그레이드: deploy/upgrade.sh bbmcp-v<새 버전>.tar.gz
@@ -30,7 +30,7 @@ services:
       retries: 10
 
   bbmcp:
-    image: bbmcp:v${BBMCP_VERSION:-0.2.8}
+    image: bbmcp:v${BBMCP_VERSION:-0.2.9}
     container_name: bbmcp
     restart: unless-stopped
     depends_on:
