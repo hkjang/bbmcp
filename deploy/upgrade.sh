@@ -2,7 +2,7 @@
 # bbmcp 업그레이드: 이미지 적재 → deploy/.env 의 BBMCP_VERSION 갱신 → 재기동 →
 # 실제로 새 버전이 떠 있는지 확인.
 #
-#   bash deploy/upgrade.sh /path/to/bbmcp-v0.2.9.tar.gz
+#   bash deploy/upgrade.sh /path/to/bbmcp-v0.2.10.tar.gz
 #
 # 이미지만 적재하고 docker compose up 을 하면, deploy/.env 에 남아 있는 예전
 # BBMCP_VERSION 때문에 예전 이미지가 계속 돕니다. 이 스크립트는 그 값을 바꾸고,
