@@ -181,7 +181,11 @@ func (e *Executor) Invoke(ctx context.Context, p Principal, name string, args Ar
 	if rec.Risk == RiskExecute || (rec.Risk == RiskWrite && res.Branch != "") {
 		branch := res.Branch
 		if branch == "" && res.PullRequest > 0 {
-			branch = e.prTargetBranch(ctx, p, res)
+			branch, err = e.prTargetBranch(ctx, p, res)
+			if err != nil {
+				return nil, e.fail(ctx, p, name, res, started,
+					toolErr(CodePermissionUnknown, "PR 대상 브랜치를 확인할 수 없습니다"))
+			}
 		}
 		if branch != "" && res.Repository != "" {
 			ok, reason, err := e.Resolver.BranchWritable(ctx, p.BitbucketUsername,
@@ -244,20 +248,24 @@ func (e *Executor) Invoke(ctx context.Context, p Principal, name string, args Ar
 }
 
 // prTargetBranch resolves a pull request's target branch for branch checks.
-func (e *Executor) prTargetBranch(ctx context.Context, p Principal, res Resource) string {
+func (e *Executor) prTargetBranch(ctx context.Context, p Principal, res Resource) (string, error) {
 	adapter, cfg, err := e.Provider.Adapter(ctx)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	cred, err := e.credential(ctx, p, cfg)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	pr, err := adapter.PullRequest(ctx, cred, res.Project, res.Repository, res.PullRequest)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimPrefix(pr.ToRef.ID, "refs/heads/")
+	branch := strings.TrimPrefix(pr.ToRef.ID, "refs/heads/")
+	if branch == "" {
+		return "", errors.New("PR 대상 브랜치가 비어 있습니다")
+	}
+	return branch, nil
 }
 
 // checkApproval validates (or demands) an approval for a risky call.
