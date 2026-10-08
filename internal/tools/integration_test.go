@@ -49,6 +49,7 @@ type fakeBitbucket struct {
 	groups      []string
 	readOnly    bool
 	prVersion   int
+	prTargetRef string
 	comments    []string
 	merged      bool
 
@@ -63,6 +64,7 @@ func newFakeBitbucket(t *testing.T) *fakeBitbucket {
 		projectPerm: map[string]string{},
 		repoPerm:    map[string]string{},
 		prVersion:   14,
+		prTargetRef: "refs/heads/master",
 	}
 	mux := http.NewServeMux()
 	write := func(w http.ResponseWriter, body string) {
@@ -155,7 +157,7 @@ func newFakeBitbucket(t *testing.T) *fakeBitbucket {
 				return
 			}
 			write(w, `{"id":7,"version":`+itoa(f.prVersion)+`,"title":"fix","state":"OPEN","open":true,
-				"fromRef":{"id":"refs/heads/feature/x"},"toRef":{"id":"refs/heads/master"}}`)
+				"fromRef":{"id":"refs/heads/feature/x"},"toRef":{"id":`+quote(f.prTargetRef)+`}}`)
 		})
 	mux.HandleFunc("/rest/api/1.0/projects/AI/repos/text2sql/pull-requests/7/comments",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -534,24 +536,20 @@ func TestMergeApprovalGoesStaleWhenPullRequestAdvances(t *testing.T) {
 	}
 }
 
-// A merge approval pins the PR version. If the gateway cannot read the current
-// version it must refuse instead of merging on an unverifiable assumption, and
-// it must leave the approval usable once Bitbucket recovers.
-func TestMergeApprovalDeniedWhenPullRequestVersionUnknown(t *testing.T) {
+// A comment reaches the approval version check without a target branch lookup.
+// If the current version is unavailable, refuse and preserve the approval.
+func TestCommentApprovalDeniedWhenPullRequestVersionUnknown(t *testing.T) {
 	f := newFixture(t)
 	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
 	f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
-	if err := f.registry.Update(f.ctx, "bitbucket_merge_pull_request", true, true, tools.RoleExecutor); err != nil {
-		t.Fatalf("enable merge tool: %v", err)
-	}
 
-	args := tools.Args{"project": "AI", "repository": "text2sql", "pullRequest": 7}
-	_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", args)
+	args := tools.Args{"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": "검토 의견"}
+	_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", args)
 	var te *tools.Error
-	if !errors.As(err, &te) || te.Approval == nil {
+	if !errors.As(err, &te) || te.Code != tools.CodeApprovalRequired || te.Approval == nil {
 		t.Fatalf("expected an approval request, got %v", err)
 	}
-	if te.Approval.PRVersion == nil {
+	if te.Approval.PRVersion == nil || *te.Approval.PRVersion != 14 {
 		t.Fatalf("approval did not pin the PR version: %+v", te.Approval)
 	}
 	if _, err := f.approvals.Decide(f.ctx, te.Approval.ID, true, "admin", ""); err != nil {
@@ -563,12 +561,12 @@ func TestMergeApprovalDeniedWhenPullRequestVersionUnknown(t *testing.T) {
 
 	withID := cloneArgs(args)
 	withID["approvalId"] = te.Approval.ID.String()
-	_, err = f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", withID)
+	_, err = f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", withID)
 	if got := codeOf(t, err); got != tools.CodeApprovalStale {
 		t.Fatalf("expected APPROVAL_STALE, got %s (%v)", got, err)
 	}
-	if f.bitbucket.merged {
-		t.Fatal("the pull request was merged without a version check")
+	if len(f.bitbucket.comments) != 0 {
+		t.Fatal("a comment was posted without a version check")
 	}
 	// The approval must survive the outage so the caller can retry.
 	req, err := f.approvals.ByID(f.ctx, te.Approval.ID)
@@ -622,6 +620,126 @@ func TestApprovalIsConsumedOnceUnderConcurrency(t *testing.T) {
 	}
 	if failed != workers-1 {
 		t.Fatalf("failed checks = %d, want %d", failed, workers-1)
+	}
+}
+
+func TestMergeTargetLookupFailureDoesNotCreateApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		prFetchFails bool
+		prTargetRef  string
+	}{
+		{name: "unavailable", prFetchFails: true, prTargetRef: "refs/heads/master"},
+		{name: "empty_ref"},
+		{name: "empty_normalized_ref", prTargetRef: "refs/heads/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+			f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+			f.bitbucket.prFetchFails = tc.prFetchFails
+			f.bitbucket.prTargetRef = tc.prTargetRef
+			if err := f.registry.Update(f.ctx, "bitbucket_merge_pull_request", true, true, tools.RoleExecutor); err != nil {
+				t.Fatalf("enable merge tool: %v", err)
+			}
+
+			_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", tools.Args{
+				"project": "AI", "repository": "text2sql", "pullRequest": 7,
+			})
+			if got := codeOf(t, err); got != tools.CodePermissionUnknown {
+				t.Errorf("expected PERMISSION_UNKNOWN, got %s", got)
+			}
+			var count int
+			if err := f.db.Pool.QueryRow(f.ctx, `SELECT COUNT(*) FROM approval_requests`).Scan(&count); err != nil {
+				t.Fatalf("approval count: %v", err)
+			}
+			if count != 0 {
+				t.Errorf("approval count = %d, want 0", count)
+			}
+			if f.bitbucket.merged {
+				t.Fatal("a pull request with an unknown target was merged")
+			}
+		})
+	}
+}
+
+func TestMergeTargetLookupFailurePreservesApprovalUntilRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		prFetchFails bool
+		prTargetRef  string
+	}{
+		{name: "unavailable", prFetchFails: true, prTargetRef: "refs/heads/master"},
+		{name: "empty_ref"},
+		{name: "empty_normalized_ref", prTargetRef: "refs/heads/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+			f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+			if err := f.registry.Update(f.ctx, "bitbucket_merge_pull_request", true, true, tools.RoleExecutor); err != nil {
+				t.Fatalf("enable merge tool: %v", err)
+			}
+
+			args := tools.Args{"project": "AI", "repository": "text2sql", "pullRequest": 7}
+			_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", args)
+			var te *tools.Error
+			if !errors.As(err, &te) || te.Code != tools.CodeApprovalRequired || te.Approval == nil {
+				t.Fatalf("expected an approval request, got %v", err)
+			}
+			if te.Approval.PRVersion == nil || *te.Approval.PRVersion != 14 {
+				t.Fatalf("approval did not pin the PR version: %+v", te.Approval.PRVersion)
+			}
+			reqID := te.Approval.ID
+			if _, err := f.approvals.Decide(f.ctx, reqID, true, "admin", ""); err != nil {
+				t.Fatalf("Decide: %v", err)
+			}
+			assertApprovalStatus := func(want string) {
+				t.Helper()
+				req, err := f.approvals.ByID(f.ctx, reqID)
+				if err != nil {
+					t.Fatalf("ByID: %v", err)
+				}
+				if req.Status != want {
+					t.Fatalf("approval status = %q, want %q", req.Status, want)
+				}
+			}
+			withID := cloneArgs(args)
+			withID["approvalId"] = reqID.String()
+
+			f.bitbucket.prFetchFails = tc.prFetchFails
+			f.bitbucket.prTargetRef = tc.prTargetRef
+			_, err = f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", withID)
+			if got := codeOf(t, err); got != tools.CodePermissionUnknown {
+				t.Fatalf("expected PERMISSION_UNKNOWN, got %s (%v)", got, err)
+			}
+			assertApprovalStatus(approval.StatusApproved)
+			if f.bitbucket.merged {
+				t.Fatal("a pull request with an unknown target was merged")
+			}
+
+			// Recovery must recheck the normalized master branch before consuming approval.
+			f.bitbucket.prFetchFails = false
+			f.bitbucket.prTargetRef = "refs/heads/master"
+			f.bitbucket.readOnly = true
+			_, err = f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", withID)
+			if got := codeOf(t, err); got != tools.CodeBranchRestricted {
+				t.Fatalf("expected BRANCH_RESTRICTED, got %s (%v)", got, err)
+			}
+			assertApprovalStatus(approval.StatusApproved)
+			if f.bitbucket.merged {
+				t.Fatal("a restricted branch was merged")
+			}
+
+			f.bitbucket.readOnly = false
+			if _, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_merge_pull_request", withID); err != nil {
+				t.Fatalf("approved merge after recovery: %v", err)
+			}
+			if !f.bitbucket.merged {
+				t.Fatal("the recovered call did not merge the pull request")
+			}
+			assertApprovalStatus(approval.StatusConsumed)
+		})
 	}
 }
 
