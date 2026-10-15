@@ -578,6 +578,57 @@ func TestCommentApprovalDeniedWhenPullRequestVersionUnknown(t *testing.T) {
 	}
 }
 
+// An approval that cannot pin the current PR version would pass the version
+// check forever, because both comparisons in approval.Check hang off
+// req.PRVersion != nil. Refuse to create such a request at all.
+func TestCommentApprovalNotCreatedWhenPullRequestVersionUnknown(t *testing.T) {
+	f := newFixture(t)
+	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+	f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+
+	// Bitbucket cannot answer pull request reads while the request is made.
+	f.bitbucket.prFetchFails = true
+
+	args := tools.Args{"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": "검토 의견"}
+	_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", args)
+	if got := codeOf(t, err); got != tools.CodePermissionUnknown {
+		t.Fatalf("expected PERMISSION_UNKNOWN, got %s (%v)", got, err)
+	}
+	var count int
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT COUNT(*) FROM approval_requests`).Scan(&count); err != nil {
+		t.Fatalf("approval count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("approval count = %d, want 0 — an unpinned approval was stored", count)
+	}
+
+	// Once the upstream recovers, the same call pins the version as before.
+	f.bitbucket.prFetchFails = false
+	_, err = f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", args)
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != tools.CodeApprovalRequired || te.Approval == nil {
+		t.Fatalf("expected an approval request after recovery, got %v", err)
+	}
+	if te.Approval.PRVersion == nil || *te.Approval.PRVersion != 14 {
+		t.Fatalf("approval did not pin the PR version: %+v", te.Approval.PRVersion)
+	}
+	if _, err := f.approvals.Decide(f.ctx, te.Approval.ID, true, "admin", ""); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	// The pinned version still guards the call: a new commit makes it stale.
+	f.bitbucket.prVersion = 15
+	withID := cloneArgs(args)
+	withID["approvalId"] = te.Approval.ID.String()
+	_, err = f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", withID)
+	if got := codeOf(t, err); got != tools.CodeApprovalStale {
+		t.Fatalf("expected APPROVAL_STALE, got %s (%v)", got, err)
+	}
+	if len(f.bitbucket.comments) != 0 {
+		t.Fatalf("comments posted = %d, want 0", len(f.bitbucket.comments))
+	}
+}
+
 // An approval is single use even when the same id arrives concurrently.
 func TestApprovalIsConsumedOnceUnderConcurrency(t *testing.T) {
 	f := newFixture(t)
