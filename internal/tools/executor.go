@@ -276,9 +276,25 @@ func (e *Executor) checkApproval(ctx context.Context, p Principal, rec Record, a
 	}
 	ttl := time.Duration(sec.ApprovalTTLMin) * time.Minute
 
+	// Read the current PR version once, before deciding which path we are on.
+	// Both paths need it, and both treat a failed read as fail-closed — but
+	// differently: creation refuses outright, consumption defers to
+	// approval.Check, which already rejects an unverifiable pinned version.
+	var currentVersion *int
+	var versionErr error
+	if res.PullRequest > 0 && res.Repository != "" {
+		currentVersion, versionErr = e.prVersion(ctx, p, res)
+	}
+
 	raw := args.OptString("approvalId", args.OptString("approval_id", ""))
 	if raw == "" {
-		req, err := e.newApprovalRequest(ctx, p, rec, args, res, ttl)
+		// An approval stored without a pinned version can never go stale, since
+		// approval.Check only compares versions when one was pinned. Refuse to
+		// create one rather than hand out a permanent bypass.
+		if versionErr != nil {
+			return nil, toolErr(CodePermissionUnknown, "PR 버전을 확인할 수 없어 승인 요청을 만들 수 없습니다")
+		}
+		req, err := e.newApprovalRequest(ctx, p, rec, args, res, currentVersion, ttl)
 		if err != nil {
 			return nil, toolErr(CodeInternal, "%v", err)
 		}
@@ -294,12 +310,6 @@ func (e *Executor) checkApproval(ctx context.Context, p Principal, rec Record, a
 		return nil, toolErr(CodeApprovalDenied, "approvalId 형식이 올바르지 않습니다")
 	}
 
-	var currentVersion *int
-	if res.PullRequest > 0 && res.Repository != "" {
-		if v := e.prVersion(ctx, p, res); v != nil {
-			currentVersion = v
-		}
-	}
 	req, err := e.Approvals.Check(ctx, id, p.KeycloakSub, rec.Name, args, currentVersion)
 	if err != nil {
 		code := CodeApprovalDenied
@@ -314,17 +324,14 @@ func (e *Executor) checkApproval(ctx context.Context, p Principal, rec Record, a
 	return req, nil
 }
 
-func (e *Executor) newApprovalRequest(ctx context.Context, p Principal, rec Record, args Args, res Resource, ttl time.Duration) (*approval.Request, error) {
+func (e *Executor) newApprovalRequest(ctx context.Context, p Principal, rec Record, args Args,
+	res Resource, version *int, ttl time.Duration) (*approval.Request, error) {
 	resource := res.Project
 	if res.Repository != "" {
 		resource += "/" + res.Repository
 	}
 	if res.PullRequest > 0 {
 		resource += fmt.Sprintf("#%d", res.PullRequest)
-	}
-	var version *int
-	if res.PullRequest > 0 && res.Repository != "" {
-		version = e.prVersion(ctx, p, res)
 	}
 	var userID *int64
 	if p.UserID != 0 {
@@ -335,21 +342,24 @@ func (e *Executor) newApprovalRequest(ctx context.Context, p Principal, rec Reco
 		args, resource, version, ttl)
 }
 
-func (e *Executor) prVersion(ctx context.Context, p Principal, res Resource) *int {
+// prVersion reads a pull request's current version. The error is reported
+// rather than swallowed: callers decide what an unreadable version means, and
+// an unknown version must never look like "no version to pin".
+func (e *Executor) prVersion(ctx context.Context, p Principal, res Resource) (*int, error) {
 	adapter, cfg, err := e.Provider.Adapter(ctx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	cred, err := e.credential(ctx, p, cfg)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	pr, err := adapter.PullRequest(ctx, cred, res.Project, res.Repository, res.PullRequest)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	v := pr.Version
-	return &v
+	return &v, nil
 }
 
 // credential chooses between Service Mode and User Mode.
