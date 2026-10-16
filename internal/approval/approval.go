@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -267,22 +268,87 @@ var sensitiveKeyParts = []string{
 	"privatekey", "private_key",
 }
 
-// redactArgs strips large or sensitive argument values before storage.
+const (
+	redactedMark = "[redacted]"
+	// maxValueBytes caps one stored string value.
+	maxValueBytes = 2000
+	// maxDepth bounds the walk so a deeply nested argument cannot exhaust the
+	// stack; maxElements does the same for a wide one.
+	maxDepth    = 8
+	maxElements = 200
+)
+
+// redactArgs strips large or sensitive argument values before storage. It
+// returns a fresh map and never writes through to args: Create hashes the
+// caller's own argument map, so an in-place scrub would store the digest of the
+// redacted copy and invalidate the approval the moment it is submitted.
 func redactArgs(args map[string]any) map[string]any {
-	out := map[string]any{}
+	out := make(map[string]any, len(args))
 	for k, v := range args {
-		lk := strings.ToLower(k)
-		if containsAny(lk, sensitiveKeyParts) {
-			out[k] = "[redacted]"
-			continue
-		}
-		if s, ok := v.(string); ok && len(s) > 2000 {
-			out[k] = s[:2000] + "…"
-			continue
-		}
-		out[k] = v
+		out[k] = redactValue(k, v, 1)
 	}
 	return out
+}
+
+// redactValue copies v, replacing credential-shaped and oversized values.
+// Objects and lists are walked rather than copied through, because a secret
+// nested inside one reaches the same record and the same admin console
+// response as a top-level one. depth counts a top-level argument value as 1.
+func redactValue(key string, v any, depth int) any {
+	if containsAny(strings.ToLower(key), sensitiveKeyParts) {
+		return redactedMark
+	}
+	// Past the bounds the value is dropped, not passed through: an argument
+	// built to outrun the walk must not be the one that escapes scrubbing.
+	if depth > maxDepth {
+		return redactedMark
+	}
+	switch t := v.(type) {
+	case string:
+		if len(t) > maxValueBytes {
+			return trimToRune(t[:maxValueBytes]) + "…"
+		}
+		return t
+	case map[string]any:
+		if len(t) > maxElements {
+			return redactedMark
+		}
+		out := make(map[string]any, len(t))
+		for k, nv := range t {
+			out[k] = redactValue(k, nv, depth+1)
+		}
+		return out
+	case []any:
+		if len(t) > maxElements {
+			return redactedMark
+		}
+		out := make([]any, len(t))
+		for i, nv := range t {
+			// List elements have no name of their own, and the enclosing key is
+			// not reapplied: a sensitive key was already handled above, so
+			// {"tokens":[…]} is gone before the list is ever walked.
+			out[i] = redactValue("", nv, depth+1)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// trimToRune drops a trailing partial UTF-8 sequence left behind by cutting a
+// string at a byte offset. Without it the byte cap splits a multi-byte
+// character — the common case for Korean arguments — and json.Marshal replaces
+// the broken bytes with U+FFFD, so the approver reads a corrupted value.
+// internal/mcp keeps its own copy of this on purpose: that one caps a response
+// for MCP clients and is free to change without touching stored approvals.
+func trimToRune(s string) string {
+	for len(s) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 func containsAny(s string, parts []string) bool {
