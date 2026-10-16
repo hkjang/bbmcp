@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hkjang/bbmcp/internal/approval"
 	"github.com/hkjang/bbmcp/internal/audit"
@@ -472,6 +473,177 @@ func TestApprovalRecordRedactsSensitiveArgumentNames(t *testing.T) {
 	if got := rec.Arguments["text"]; got != "검토 의견" {
 		t.Errorf("Arguments[\"text\"] = %v, want the original comment", got)
 	}
+}
+
+// Secret-shaped names nested inside an object or a list argument reach the same
+// record and the same admin console response, so the scrub has to descend into
+// them instead of copying the container through untouched.
+func TestApprovalRecordRedactsNestedSensitiveArgumentNames(t *testing.T) {
+	f := newFixture(t)
+	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+	f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+
+	args := tools.Args{
+		"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": "검토 의견",
+		"body": map[string]any{
+			"password": "p",
+			"inner":    map[string]any{"secret": "s", "label": "보임"},
+		},
+		"list": []any{map[string]any{"token": "t"}},
+	}
+
+	rec := approvalRecordFor(t, f, args)
+
+	body, ok := rec.Arguments["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("Arguments[\"body\"] = %#v, want an object", rec.Arguments["body"])
+	}
+	if got := body["password"]; got != "[redacted]" {
+		t.Errorf("body.password = %v, want \"[redacted]\"", got)
+	}
+	inner, ok := body["inner"].(map[string]any)
+	if !ok {
+		t.Fatalf("body.inner = %#v, want an object", body["inner"])
+	}
+	if got := inner["secret"]; got != "[redacted]" {
+		t.Errorf("body.inner.secret = %v, want \"[redacted]\"", got)
+	}
+	// Ordinary nested values stay readable so an approver still sees the request.
+	if got := inner["label"]; got != "보임" {
+		t.Errorf("body.inner.label = %v, want \"보임\"", got)
+	}
+	list, ok := rec.Arguments["list"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("Arguments[\"list\"] = %#v, want a one-element list", rec.Arguments["list"])
+	}
+	elem, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatalf("list[0] = %#v, want an object", list[0])
+	}
+	if got := elem["token"]; got != "[redacted]" {
+		t.Errorf("list[0].token = %v, want \"[redacted]\"", got)
+	}
+}
+
+// A deeply nested argument must not be walked without bound, and the values past
+// the bound must be dropped rather than copied through unscrubbed.
+func TestApprovalRecordDropsOverDeepArguments(t *testing.T) {
+	f := newFixture(t)
+	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+	f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+
+	// The top-level argument value counts as depth 1, so a leaf at depth 9 sits
+	// one level past the cap of 8.
+	const depth = 9
+	leaf := any("password-ish-but-unnamed")
+	nested := leaf
+	for i := 0; i < depth-1; i++ {
+		nested = map[string]any{"n": nested}
+	}
+	args := tools.Args{
+		"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": "검토 의견",
+		"deep": nested,
+	}
+
+	rec := approvalRecordFor(t, f, args)
+
+	cur := rec.Arguments["deep"]
+	for i := 1; i < depth; i++ {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			t.Fatalf("depth %d: %#v, want an object", i, cur)
+		}
+		cur = m["n"]
+	}
+	if cur != "[redacted]" {
+		t.Errorf("value at depth %d = %#v, want \"[redacted]\"", depth, cur)
+	}
+}
+
+// The 2000-byte cap on a stored argument is a byte offset, so it can land inside
+// a multi-byte character; json.Marshal then replaces the broken bytes with
+// U+FFFD and the approver reads a corrupted value. The three ASCII prefixes
+// shift the cut by one byte each, covering every residue of 2000 mod 3 — with
+// only one prefix the cut can land on a clean boundary by luck.
+func TestApprovalRecordTruncatesLongArgumentsAtRuneBoundary(t *testing.T) {
+	for _, pad := range []string{"", "A", "AA"} {
+		f := newFixture(t)
+		f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+		f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+
+		long := pad + strings.Repeat("한", 1000) // 3 bytes per character
+		args := tools.Args{
+			"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": long,
+		}
+
+		rec := approvalRecordFor(t, f, args)
+
+		got, ok := rec.Arguments["text"].(string)
+		if !ok {
+			t.Fatalf("pad %dB: Arguments[\"text\"] = %#v, want a string", len(pad), rec.Arguments["text"])
+		}
+		if !strings.HasSuffix(got, "…") {
+			t.Errorf("pad %dB: stored value was not truncated: %d bytes", len(pad), len(got))
+		}
+		if i := strings.IndexRune(got, utf8.RuneError); i >= 0 {
+			t.Errorf("pad %dB: U+FFFD at byte %d — the cut split a character (…%q)",
+				len(pad), i, got[max(0, i-12):])
+		}
+	}
+}
+
+// Hash is computed from the caller's own argument map, so scrubbing must copy
+// rather than overwrite it: an in-place scrub would store the hash of the
+// redacted arguments and invalidate the approval the moment it is submitted.
+func TestNestedArgumentScrubLeavesApprovalUsable(t *testing.T) {
+	f := newFixture(t)
+	f.bitbucket.projectPerm["AI"] = "PROJECT_WRITE"
+	f.bitbucket.repoPerm["AI/text2sql"] = "REPO_WRITE"
+
+	args := tools.Args{
+		"project": "AI", "repository": "text2sql", "pullRequest": 7, "text": "검토 의견",
+		"body": map[string]any{"password": "p"},
+	}
+	_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", args)
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Approval == nil {
+		t.Fatalf("expected an approval request, got %v", err)
+	}
+	// The caller's map must come back out of Invoke unchanged.
+	if got := args["body"].(map[string]any)["password"]; got != "p" {
+		t.Errorf("caller argument was mutated: body.password = %v, want \"p\"", got)
+	}
+	if _, err := f.approvals.Decide(f.ctx, te.Approval.ID, true, "admin", ""); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	withID := cloneArgs(args)
+	withID["approvalId"] = te.Approval.ID.String()
+	if _, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", withID); err != nil {
+		t.Fatalf("approved call rejected: %v", err)
+	}
+	if len(f.bitbucket.comments) != 1 {
+		t.Fatalf("comment count = %d, want 1", len(f.bitbucket.comments))
+	}
+}
+
+// approvalRecordFor runs one call that must stop at the approval gate and reads
+// the stored record back out of the database the way listApprovals does.
+func approvalRecordFor(t *testing.T, f *fixture, args tools.Args) *approval.Request {
+	t.Helper()
+	_, err := f.exec.Invoke(f.ctx, f.principal(), "bitbucket_comment_pull_request", args)
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != tools.CodeApprovalRequired {
+		t.Fatalf("expected APPROVAL_REQUIRED, got %v", err)
+	}
+	if te.Approval == nil {
+		t.Fatal("no approval request was returned")
+	}
+	rec, err := f.approvals.ByID(f.ctx, te.Approval.ID)
+	if err != nil {
+		t.Fatalf("ByID: %v", err)
+	}
+	return rec
 }
 
 func TestApprovalGoesStaleWhenArgumentsChange(t *testing.T) {
