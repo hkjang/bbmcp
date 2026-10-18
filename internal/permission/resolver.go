@@ -35,6 +35,12 @@ type cacheEntry struct {
 	exp time.Time
 }
 
+// maxCacheEntries bounds the permission cache. Entries are only dropped when
+// their own key is looked up again, so keys that are never revisited (an
+// unknown repository name still yields a cacheable None decision) would
+// otherwise live for the lifetime of the process.
+const maxCacheEntries = 10000
+
 // NewResolver builds the resolver.
 func NewResolver(store *settings.Store, provider *bitbucket.Provider) *Resolver {
 	return &Resolver{
@@ -68,9 +74,39 @@ func (r *Resolver) store_(key string, dec Decision, ttl time.Duration) {
 	if ttl <= 0 {
 		return
 	}
+	now := time.Now()
 	r.mu.Lock()
-	r.cache[key] = cacheEntry{dec: dec, exp: time.Now().Add(ttl)}
+	if _, exists := r.cache[key]; !exists && len(r.cache) >= maxCacheEntries {
+		r.evictLocked(now)
+	}
+	r.cache[key] = cacheEntry{dec: dec, exp: now.Add(ttl)}
 	r.mu.Unlock()
+}
+
+// evictLocked frees room for one entry. Expired entries go first; if every
+// entry is still live the one closest to expiry is dropped. It never changes
+// an entry's expiry, so the only effect of eviction is that the next call
+// resolves the permission again.
+func (r *Resolver) evictLocked(now time.Time) {
+	var (
+		soonest    string
+		soonestExp time.Time
+		haveLive   bool
+		freed      bool
+	)
+	for k, e := range r.cache {
+		if now.After(e.exp) {
+			delete(r.cache, k)
+			freed = true
+			continue
+		}
+		if !haveLive || e.exp.Before(soonestExp) {
+			soonest, soonestExp, haveLive = k, e.exp, true
+		}
+	}
+	if !freed && haveLive {
+		delete(r.cache, soonest)
+	}
 }
 
 // Repository resolves the effective permission of username on one repository.
