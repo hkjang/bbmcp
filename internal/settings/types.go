@@ -36,6 +36,11 @@ type Keycloak struct {
 	AutoProvision   bool     `json:"autoProvision"`
 	InsecureSkipTLS bool     `json:"insecureSkipTls"`
 	RequireRole     string   `json:"requireRole"`
+	// DefaultRole is the bbmcp role every Keycloak-linked user holds at least,
+	// on top of whatever the token carries and an administrator granted. Empty
+	// means no floor. It is evaluated on every request, never written into the
+	// user's own roles, so lowering it takes effect for everyone at once.
+	DefaultRole string `json:"defaultRole"`
 
 	// MCP OAuth. An MCP client is a public client that discovers the
 	// authorization server through this gateway and signs in with PKCE, so it

@@ -284,8 +284,9 @@ function KeyPolicySection() {
     {
       kind: 'select',
       key: 'defaultRole',
-      label: '기본 역할',
-      description: '사용자가 역할을 지정하지 않고 키를 발급할 때 사용됩니다.',
+      label: '키 기본 역할',
+      description:
+        '역할을 지정하지 않고 개인 API 키를 발급할 때만 쓰입니다. Keycloak 사용자의 역할은 인증(Keycloak) → SSO 사용자 기본 역할에서 정합니다.',
       options: (roles.data ?? []).map((r) => ({ value: r.name, label: r.name })),
     },
     { kind: 'number', key: 'rotationDays', label: '회전 주기 (일)', description: '0 이면 회전 안내를 하지 않습니다.', min: 0, max: 3650 },

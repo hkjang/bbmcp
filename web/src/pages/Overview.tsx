@@ -28,7 +28,7 @@ import { Link } from 'react-router-dom'
 import { CopyField, PageHeader, Section, StatList } from '../components/ui'
 import { api, type ApiKey, type ApprovalRequest, type ToolRecord } from '../lib/api'
 import { useAuth } from '../lib/auth'
-import { formatDateTime, formatRelative } from '../lib/format'
+import { describeRoles, formatDateTime, formatRelative } from '../lib/format'
 
 export function OverviewPage() {
   const { me } = useAuth()
@@ -146,7 +146,7 @@ export function OverviewPage() {
             <StatList
               items={[
                 { label: 'Keycloak 사용자', value: me?.user.username ?? '—' },
-                { label: '역할', value: me?.user.roles.join(', ') || '—' },
+                { label: '역할', value: describeRoles(me?.user.effectiveRoles) },
                 { label: 'Bitbucket 사용자', value: me?.bitbucket?.bitbucketUsername ?? '매핑 없음' },
                 { label: 'Bitbucket 사용자 ID', value: me?.bitbucket?.bitbucketUserId ?? '—' },
                 { label: '매핑 방식', value: me?.bitbucket?.mappingType === 'manual' ? '수동' : me?.bitbucket ? '자동' : '—' },

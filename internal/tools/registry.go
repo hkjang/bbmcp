@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -244,6 +246,36 @@ func roleRank(role string) int {
 	default:
 		return 0
 	}
+}
+
+// KnownRole reports whether name is one of the bbmcp roles above.
+func KnownRole(name string) bool { return roleRank(name) > 0 }
+
+// DefaultRoleAllowed reports whether name may be the role every SSO user gets
+// without being granted it. Administrator capability is never handed out by
+// default; it has to come from a token or an explicit grant.
+func DefaultRoleAllowed(name string) bool {
+	return name == "" || (KnownRole(name) && name != RoleAdmin)
+}
+
+// MergeRoles unions role sets from different sources (token, grant, default)
+// into the bbmcp roles they contain, deduplicated and ordered by capability.
+// Anything else a token carries, such as offline_access, is dropped.
+func MergeRoles(sets ...[]string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, set := range sets {
+		for _, r := range set {
+			r = strings.TrimSpace(r)
+			if !KnownRole(r) || seen[r] {
+				continue
+			}
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return roleRank(out[i]) < roleRank(out[j]) })
+	return out
 }
 
 // RoleSatisfied reports whether any held role meets the minimum.

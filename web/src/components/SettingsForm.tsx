@@ -38,6 +38,9 @@ export type Field<T extends object> =
       label: string
       description?: string
       options: SelectOption[]
+      /** Shown when the value is empty; with clearable the value can be emptied again. */
+      placeholder?: string
+      clearable?: boolean
       span?: number
     }
   | { kind: 'tags'; key: keyof T & string; label: string; description?: string; placeholder?: string; span?: number }
@@ -163,6 +166,8 @@ function renderField<T extends object>(
           data={options}
           value={current === '' ? null : current}
           onChange={(next) => set(field.key, next ?? '')}
+          placeholder={field.placeholder}
+          clearable={field.clearable}
           allowDeselect={false}
           searchable={options.length > 8}
           nothingFoundMessage="일치하는 항목이 없습니다"
