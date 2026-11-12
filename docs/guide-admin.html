@@ -224,6 +224,26 @@ curl -fsS http://localhost:8080/readyz   # 구성 전에는 503 이 정상입니
     사용자는 로그인 시 자동으로 관리자 권한을 받습니다. <strong>로그인 필수 역할</strong> 을 지정하면 그
     역할이 없는 사용자는 로그인 자체가 차단됩니다.
   </p>
+  <p>
+    사용자의 실제 역할은 아래 세 곳에서 온 역할 중 <strong>가장 높은 것</strong>입니다. 웹 콘솔 세션,
+    MCP OAuth, 개인 API 키 모두 같은 규칙으로 판정합니다.
+  </p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>출처</th><th>정하는 곳</th><th>로그인할 때</th></tr></thead>
+      <tbody>
+        <tr><td>Keycloak 토큰 역할</td><td>Keycloak realm 역할 (역할 클레임 경로)</td><td>매 로그인·MCP 요청마다 토큰 값으로 갱신</td></tr>
+        <tr><td>부여 역할</td><td>bbmcp 관리 콘솔 → 사용자 → 편집</td><td><strong>바뀌지 않습니다</strong></td></tr>
+        <tr><td>SSO 사용자 기본 역할</td><td>bbmcp 관리 콘솔 → 인증 (Keycloak)</td><td>Keycloak 계정 전원에게 매 요청 적용 (저장되지 않음)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Keycloak realm 에 <code>bitbucket-mcp-*</code> 역할을 만들지 않았거나 MCP 클라이언트의 토큰에 역할이
+    실리지 않는 환경이라면, <strong>SSO 사용자 기본 역할</strong> 로 모두에게 같은 역할을 주고 더 필요한
+    사람만 사용자 화면에서 부여하십시오. 기본 역할로는 조회·작성·실행까지만 고를 수 있고 관리 역할은 줄 수
+    없습니다. 기본 역할은 최소값이라 특정 사용자만 그보다 낮출 수는 없습니다 — 그 사용자는 비활성화하십시오.
+  </p>
 
   <h3 id="silent-sso">3.3 사일런트 SSO</h3>
   <p>
@@ -644,7 +664,7 @@ $as = ($r.Content | ConvertFrom-Json).authorization_servers[0]; "authorization s
     <table>
       <thead><tr><th>설정</th><th>의미</th></tr></thead>
       <tbody>
-        <tr><td>기본 역할</td><td>사용자가 역할을 고르지 않았을 때 적용</td></tr>
+        <tr><td>키 기본 역할</td><td>키를 발급하며 역할을 고르지 않았을 때 적용. Keycloak 사용자의 역할과는 무관합니다(<a href="#keycloak-roles">3.2</a> 의 SSO 사용자 기본 역할을 쓰십시오)</td></tr>
         <tr><td>회전 주기</td><td>이 기간이 지나면 키 상태가 "회전 필요" 로 바뀝니다</td></tr>
         <tr><td>키 유효 기간</td><td>자동 만료 기간. 0 이면 만료 없음</td></tr>
         <tr><td>사용자당 최대 활성 키</td><td>초과 발급을 막습니다</td></tr>
@@ -656,7 +676,12 @@ $as = ($r.Content | ConvertFrom-Json).authorization_servers[0]; "authorization s
 
   <h2 id="users">11. 사용자</h2>
   <p>
-    Keycloak 로그인 사용자는 첫 로그인 시 자동 등록되고, 역할은 매 로그인마다 토큰 값으로 갱신됩니다.
+    Keycloak 로그인 사용자는 첫 로그인 시 자동 등록됩니다. 편집에서 준 <strong>부여 역할</strong>은 다시
+    로그인하거나 MCP 로 요청해도 그대로 유지되고, 바로 다음 요청부터 적용됩니다. 목록의 역할 칸은 실제 적용
+    역할과 그 출처(부여·토큰·기본)를 함께 보여 줍니다. 자세한 규칙은 <a href="#keycloak-roles">3.2 역할</a>
+    을 보십시오. 비활성화한 사용자는 웹 세션뿐 아니라 MCP OAuth 와 API 키로도 접근할 수 없습니다.
+  </p>
+  <p>
     로컬 계정은 SSO 장애 시 접속용으로만 쓰십시오. 마지막 서비스 관리자는 삭제·강등할 수 없습니다.
   </p>
   <figure>

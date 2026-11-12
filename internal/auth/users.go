@@ -22,13 +22,21 @@ var ErrNotFound = errors.New("사용자를 찾을 수 없습니다")
 // User is a bbmcp account. Accounts are either local (bootstrap admin and
 // operator-created) or provisioned from Keycloak on first login.
 type User struct {
-	ID             int64      `json:"id"`
-	Username       string     `json:"username"`
-	Email          string     `json:"email"`
-	DisplayName    string     `json:"displayName"`
-	KeycloakSub    string     `json:"keycloakSub,omitempty"`
-	IsServiceAdmin bool       `json:"isServiceAdmin"`
-	Roles          []string   `json:"roles"`
+	ID             int64  `json:"id"`
+	Username       string `json:"username"`
+	Email          string `json:"email"`
+	DisplayName    string `json:"displayName"`
+	KeycloakSub    string `json:"keycloakSub,omitempty"`
+	IsServiceAdmin bool   `json:"isServiceAdmin"`
+	// Roles are the roles an administrator granted in bbmcp. Signing in never
+	// changes them.
+	Roles []string `json:"roles"`
+	// KeycloakRoles are the roles the most recent Keycloak token carried,
+	// refreshed on every SSO sign-in and MCP OAuth request.
+	KeycloakRoles []string `json:"keycloakRoles"`
+	// EffectiveRoles is what authorisation uses: granted, token and SSO
+	// default roles merged. It is computed, not stored.
+	EffectiveRoles []string   `json:"effectiveRoles"`
 	Active         bool       `json:"active"`
 	Source         string     `json:"source"`
 	CreatedAt      time.Time  `json:"createdAt"`
@@ -43,13 +51,13 @@ type Users struct{ pool *pgxpool.Pool }
 func NewUsers(pool *pgxpool.Pool) *Users { return &Users{pool: pool} }
 
 const userCols = `id, username, COALESCE(email,''), COALESCE(display_name,''),
-	COALESCE(keycloak_sub,''), is_service_admin, roles, active, source,
+	COALESCE(keycloak_sub,''), is_service_admin, roles, keycloak_roles, active, source,
 	created_at, last_login_at, (password_hash IS NOT NULL)`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.KeycloakSub,
-		&u.IsServiceAdmin, &u.Roles, &u.Active, &u.Source, &u.CreatedAt,
+		&u.IsServiceAdmin, &u.Roles, &u.KeycloakRoles, &u.Active, &u.Source, &u.CreatedAt,
 		&u.LastLoginAt, &u.HasPassword)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -149,22 +157,25 @@ func (r *Users) EnsureBootstrapAdmin(ctx context.Context, username, password str
 }
 
 // UpsertFromKeycloak provisions or refreshes a user seen in an OIDC token.
-func (r *Users) UpsertFromKeycloak(ctx context.Context, sub, username, email, display string, roles []string, admin bool) (*User, error) {
-	if roles == nil {
-		roles = []string{}
+// tokenRoles replace only the stored Keycloak roles: the roles an
+// administrator granted in bbmcp are left exactly as they were, so a sign-in
+// can never take away access that was given here.
+func (r *Users) UpsertFromKeycloak(ctx context.Context, sub, username, email, display string, tokenRoles []string, admin bool) (*User, error) {
+	if tokenRoles == nil {
+		tokenRoles = []string{}
 	}
 	// A local account with the same username is linked rather than duplicated.
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO users(username, email, display_name, keycloak_sub, roles, is_service_admin, source)
+		INSERT INTO users(username, email, display_name, keycloak_sub, keycloak_roles, is_service_admin, source)
 		VALUES ($1,$2,$3,$4,$5,$6,'keycloak')
 		ON CONFLICT (username) DO UPDATE
 		   SET email = COALESCE(EXCLUDED.email, users.email),
 		       display_name = COALESCE(EXCLUDED.display_name, users.display_name),
 		       keycloak_sub = EXCLUDED.keycloak_sub,
-		       roles = EXCLUDED.roles,
+		       keycloak_roles = EXCLUDED.keycloak_roles,
 		       is_service_admin = users.is_service_admin OR EXCLUDED.is_service_admin,
 		       updated_at = NOW()`,
-		username, nullable(email), nullable(display), sub, roles, admin)
+		username, nullable(email), nullable(display), sub, tokenRoles, admin)
 	if err != nil {
 		return nil, fmt.Errorf("keycloak 사용자 동기화 실패: %w", err)
 	}

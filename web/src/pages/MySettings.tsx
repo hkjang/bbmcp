@@ -16,7 +16,7 @@ import { useState } from 'react'
 import { PageHeader, Section, StatList } from '../components/ui'
 import { api, type Prefs } from '../lib/api'
 import { useAuth } from '../lib/auth'
-import { formatDateTime } from '../lib/format'
+import { describeRoles, formatDateTime } from '../lib/format'
 
 export function MySettingsPage() {
   const { me, refresh } = useAuth()
@@ -73,7 +73,7 @@ export function MySettingsPage() {
             { label: '표시 이름', value: me?.user.displayName || '—' },
             { label: '이메일', value: me?.user.email || '—' },
             { label: '계정 출처', value: me?.user.source === 'keycloak' ? 'Keycloak SSO' : '로컬' },
-            { label: '역할', value: me?.user.roles.join(', ') || '—' },
+            { label: '역할', value: describeRoles(me?.user.effectiveRoles) },
             { label: '생성', value: formatDateTime(me?.user.createdAt) },
             { label: '마지막 로그인', value: formatDateTime(me?.user.lastLoginAt) },
           ]}

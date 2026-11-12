@@ -18,9 +18,24 @@ import { useState } from 'react'
 
 import { EmptyState, ErrorBlock, LoadingBlock, PageHeader, Section, TableScroll } from '../../components/ui'
 import { api, type User } from '../../lib/api'
-import { formatDateTime, formatRelative, roleLabels } from '../../lib/format'
+import { bbmcpRoles, describeRoles, formatDateTime, formatRelative, roleLabels } from '../../lib/format'
 
 const roleOptions = Object.entries(roleLabels).map(([value, label]) => ({ value, label }))
+
+function shortRoles(roles: string[]): string {
+  return roles.map((role) => roleLabels[role]?.split(' ')[0] ?? role).join('·')
+}
+
+/** Where each effective role comes from: granted here, the token, or the SSO default. */
+function roleSources(user: User): string {
+  const parts: string[] = []
+  if (user.roles.length) parts.push(`부여 ${shortRoles(user.roles)}`)
+  const token = bbmcpRoles(user.keycloakRoles)
+  if (token.length) parts.push(`토큰 ${shortRoles(token)}`)
+  const fromDefault = user.effectiveRoles.filter((role) => !user.roles.includes(role) && !token.includes(role))
+  if (fromDefault.length) parts.push(`기본 ${shortRoles(fromDefault)}`)
+  return parts.join(' · ')
+}
 
 export function AdminUsersPage() {
   const queryClient = useQueryClient()
@@ -54,7 +69,7 @@ export function AdminUsersPage() {
     <>
       <PageHeader
         title="사용자"
-        description="Keycloak 로그인 사용자는 첫 로그인 시 자동 등록됩니다. 로컬 계정은 SSO 장애 시 접속용으로 사용하십시오."
+        description="Keycloak 로그인 사용자는 첫 로그인 시 자동 등록됩니다. 실제 역할은 여기서 부여한 역할, Keycloak 토큰 역할, SSO 기본 역할 중 가장 높은 것입니다. 로컬 계정은 SSO 장애 시 접속용으로 사용하십시오."
         actions={
           <Group gap="sm">
             <TextInput
@@ -108,18 +123,30 @@ export function AdminUsersPage() {
                       </Badge>
                     </Table.Td>
                     <Table.Td>
-                      <Group gap={4}>
-                        {user.isServiceAdmin ? (
-                          <Badge variant="light" color="grape">
-                            서비스 관리자
-                          </Badge>
+                      <Stack gap={4}>
+                        <Group gap={4}>
+                          {user.isServiceAdmin ? (
+                            <Badge variant="light" color="grape">
+                              서비스 관리자
+                            </Badge>
+                          ) : null}
+                          {user.effectiveRoles.map((role) => (
+                            <Badge key={role} size="xs" variant="outline" color="gray">
+                              {roleLabels[role] ?? role}
+                            </Badge>
+                          ))}
+                          {!user.isServiceAdmin && user.effectiveRoles.length === 0 ? (
+                            <Text size="xs" c="dimmed">
+                              역할 없음
+                            </Text>
+                          ) : null}
+                        </Group>
+                        {roleSources(user) ? (
+                          <Text size="xs" c="dimmed">
+                            {roleSources(user)}
+                          </Text>
                         ) : null}
-                        {user.roles.map((role) => (
-                          <Badge key={role} size="xs" variant="outline" color="gray">
-                            {role}
-                          </Badge>
-                        ))}
-                      </Group>
+                      </Stack>
                     </Table.Td>
                     <Table.Td>
                       <Badge variant="light" color={user.active ? 'teal' : 'gray'}>
@@ -269,12 +296,15 @@ function EditUserModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const [draft, setDraft] = useState<User | null>(user)
+  // Only bbmcp roles can be granted; anything else would look like access
+  // and grant none, and the server refuses it.
+  const editable = (u: User | null) => (u ? { ...u, roles: bbmcpRoles(u.roles) } : null)
+  const [draft, setDraft] = useState<User | null>(editable(user))
   const key = user?.id ?? 0
   const [lastKey, setLastKey] = useState(key)
   if (lastKey !== key) {
     setLastKey(key)
-    setDraft(user)
+    setDraft(editable(user))
   }
 
   const save = useMutation({
@@ -316,13 +346,21 @@ function EditUserModal({
           onChange={(event) => setDraft({ ...draft, email: event.currentTarget.value })}
         />
         <MultiSelect
-          label="역할"
-          description="Keycloak 사용자는 다음 로그인 시 토큰의 역할로 덮어써집니다."
+          label="부여 역할"
+          description="여기서 준 역할은 로그인해도 바뀌지 않습니다. Keycloak 토큰 역할과 SSO 기본 역할은 여기에 더해집니다."
           data={roleOptions}
           value={draft.roles}
           onChange={(value) => setDraft({ ...draft, roles: value })}
           comboboxProps={{ withinPortal: true }}
         />
+        {draft.keycloakSub ? (
+          <Text size="sm" c="dimmed">
+            마지막 Keycloak 토큰의 역할: {describeRoles(bbmcpRoles(draft.keycloakRoles))}
+          </Text>
+        ) : null}
+        <Text size="sm" c="dimmed">
+          현재 적용 중인 역할: {describeRoles(user?.effectiveRoles)}
+        </Text>
         <Switch
           label="서비스 관리자"
           checked={draft.isServiceAdmin}

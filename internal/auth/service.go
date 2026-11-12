@@ -120,22 +120,52 @@ func (s *Service) resolveOIDCBearer(ctx context.Context, token string) (*Identit
 	if err != nil {
 		return nil, err
 	}
-	id := s.identityFor(ctx, u, "oauth", "")
-	id.Scopes = tools.ScopesForRoles(claims.Roles)
-	if u.IsServiceAdmin {
-		id.Scopes = tools.ScopesForRoles([]string{tools.RoleAdmin})
+	if !u.Active {
+		return nil, errors.New("비활성 계정입니다")
 	}
-	return id, nil
+	// Scopes come from the merged roles, not from the token alone: a role an
+	// administrator granted in bbmcp counts for MCP OAuth exactly as it does
+	// for the web console.
+	return s.identityFor(ctx, u, "oauth", ""), nil
+}
+
+// EffectiveRoles merges the three places a user's bbmcp role can come from:
+// the roles an administrator granted here, the roles the last Keycloak token
+// carried, and, for Keycloak-linked accounts, the SSO default role. Roles are
+// ranked, so the merge never lowers what any one source gives.
+func EffectiveRoles(u *User, kc settings.Keycloak) []string {
+	sets := [][]string{u.Roles, u.KeycloakRoles}
+	if u.KeycloakSub != "" && tools.DefaultRoleAllowed(kc.DefaultRole) && kc.DefaultRole != "" {
+		sets = append(sets, []string{kc.DefaultRole})
+	}
+	return tools.MergeRoles(sets...)
+}
+
+// ResolveRoles fills EffectiveRoles on each user, for callers that show users
+// rather than authorise them.
+func (s *Service) ResolveRoles(ctx context.Context, users ...*User) {
+	kc, err := s.Store.Keycloak(ctx)
+	if err != nil {
+		// Without settings the default role is unknown; leave it out rather
+		// than guess, which can only under-report.
+		kc = settings.Keycloak{}
+	}
+	for _, u := range users {
+		if u != nil {
+			u.EffectiveRoles = EffectiveRoles(u, kc)
+		}
+	}
 }
 
 // identityFor assembles the identity, resolving the Bitbucket mapping lazily.
 func (s *Service) identityFor(ctx context.Context, u *User, mode, keyID string) *Identity {
+	s.ResolveRoles(ctx, u)
 	id := &Identity{
 		User:        u,
 		AuthMode:    mode,
 		KeycloakSub: subjectFor(u),
 		APIKeyID:    keyID,
-		Scopes:      tools.ScopesForRoles(u.Roles),
+		Scopes:      tools.ScopesForRoles(u.EffectiveRoles),
 	}
 	if u.IsServiceAdmin {
 		id.Scopes = tools.ScopesForRoles([]string{tools.RoleAdmin})
@@ -153,7 +183,7 @@ func (id *Identity) Principal(client, ip string, preferUserPAT bool) tools.Princ
 		KeycloakSub:    id.KeycloakSub,
 		Username:       id.User.Username,
 		DisplayName:    id.User.DisplayName,
-		Roles:          id.User.Roles,
+		Roles:          append([]string(nil), id.User.EffectiveRoles...),
 		Scopes:         id.Scopes,
 		IsServiceAdmin: id.User.IsServiceAdmin,
 		AuthMode:       id.AuthMode,

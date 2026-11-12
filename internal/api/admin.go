@@ -463,6 +463,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 				"Keycloak SSO 를 켜려면 Issuer URL 이 필요합니다")
 			return
 		}
+		next.DefaultRole = strings.TrimSpace(next.DefaultRole)
+		if !tools.DefaultRoleAllowed(next.DefaultRole) {
+			httpx.Fail(w, http.StatusBadRequest, fmt.Sprintf(
+				"SSO 사용자 기본 역할은 비워 두거나 %s, %s, %s 중 하나여야 합니다 (관리자 역할은 기본으로 줄 수 없습니다)",
+				tools.RoleUser, tools.RoleWriter, tools.RoleExecutor))
+			return
+		}
 		if next.RedirectURL != "" && !strings.HasSuffix(next.RedirectURL, CallbackPath) {
 			httpx.FailCode(w, http.StatusBadRequest, "INVALID_URL",
 				"Redirect URI 는 "+CallbackPath+" 로 끝나야 합니다. 이 경로에서만 콜백을 받습니다.")
@@ -832,7 +839,23 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for i := range users {
+		s.Auth.ResolveRoles(r.Context(), &users[i])
+	}
 	httpx.JSON(w, http.StatusOK, users)
+}
+
+// grantableRoles validates the roles an administrator grants: only bbmcp roles
+// mean anything to authorisation, so anything else is refused rather than
+// stored and silently ignored.
+func grantableRoles(in []string) ([]string, error) {
+	for _, r := range in {
+		if !tools.KnownRole(strings.TrimSpace(r)) {
+			return nil, fmt.Errorf("알 수 없는 역할입니다: %q (%s, %s, %s, %s 중에서 고르십시오)", r,
+				tools.RoleUser, tools.RoleWriter, tools.RoleExecutor, tools.RoleAdmin)
+		}
+	}
+	return tools.MergeRoles(in), nil
 }
 
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
@@ -852,12 +875,18 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, http.StatusBadRequest, "사용자명과 10자 이상의 비밀번호가 필요합니다")
 		return
 	}
-	u, err := s.Users.CreateLocal(r.Context(), strings.TrimSpace(body.Username), body.Password,
-		body.DisplayName, body.Email, body.IsAdmin, body.Roles)
+	roles, err := grantableRoles(body.Roles)
 	if err != nil {
 		httpx.Fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	u, err := s.Users.CreateLocal(r.Context(), strings.TrimSpace(body.Username), body.Password,
+		body.DisplayName, body.Email, body.IsAdmin, roles)
+	if err != nil {
+		httpx.Fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.Auth.ResolveRoles(r.Context(), u)
 	s.Audit.Write(r.Context(), audit.Entry{
 		Category: audit.CatAdmin, Action: "user.create",
 		KeycloakUsername: identityOf(r).User.Username, Success: true,
@@ -889,6 +918,11 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, http.StatusBadRequest, "요청 형식이 올바르지 않습니다")
 		return
 	}
+	roles, err := grantableRoles(body.Roles)
+	if err != nil {
+		httpx.Fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Never let the last administrator remove their own access.
 	if target.IsServiceAdmin && (!body.IsAdmin || !body.Active) {
 		if n, err := s.Users.CountAdmins(ctx); err == nil && n <= 1 {
@@ -897,14 +931,32 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.Users.Update(ctx, id, body.DisplayName, body.Email,
-		body.IsAdmin, body.Active, body.Roles); err != nil {
+		body.IsAdmin, body.Active, roles); err != nil {
 		httpx.Fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if !body.Active {
 		_ = s.Sessions.RevokeUser(ctx, id)
 	}
-	updated, _ := s.Users.ByID(ctx, id)
+	s.Audit.Write(ctx, audit.Entry{
+		Category: audit.CatAdmin, Action: "user.update",
+		KeycloakUsername: identityOf(r).User.Username, Success: true,
+		Detail: map[string]any{
+			"target":       target.Username,
+			"rolesBefore":  target.Roles,
+			"rolesAfter":   roles,
+			"adminBefore":  target.IsServiceAdmin,
+			"adminAfter":   body.IsAdmin,
+			"activeBefore": target.Active,
+			"activeAfter":  body.Active,
+		},
+	})
+	updated, err := s.Users.ByID(ctx, id)
+	if err != nil {
+		httpx.Fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.Auth.ResolveRoles(ctx, updated)
 	httpx.JSON(w, http.StatusOK, updated)
 }
 

@@ -78,6 +78,20 @@ const loginFields: Field<KeycloakSettings>[] = [
     description: '비워 두면 역할 제한 없이 로그인할 수 있습니다.',
   },
   {
+    kind: 'select',
+    key: 'defaultRole',
+    label: 'SSO 사용자 기본 역할',
+    description:
+      'Keycloak 으로 로그인한 모든 사용자(웹 콘솔·MCP OAuth)가 최소한 갖는 역할입니다. Keycloak 토큰 역할이나 사용자 화면에서 부여한 역할이 더 높으면 그 역할이 적용됩니다. 비워 두면 기본 역할이 없습니다.',
+    placeholder: '없음',
+    clearable: true,
+    options: [
+      { value: 'bitbucket-mcp-user', label: '조회 (bitbucket-mcp-user)' },
+      { value: 'bitbucket-mcp-writer', label: '작성 (bitbucket-mcp-writer)' },
+      { value: 'bitbucket-mcp-executor', label: '실행 (bitbucket-mcp-executor)' },
+    ],
+  },
+  {
     kind: 'number',
     key: 'silentSsoMaxAgeSec',
     label: '사일런트 SSO max_age (초)',

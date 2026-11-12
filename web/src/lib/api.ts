@@ -90,7 +90,12 @@ export interface User {
   displayName: string
   keycloakSub?: string
   isServiceAdmin: boolean
+  /** Roles an administrator granted in bbmcp; signing in never changes them. */
   roles: string[]
+  /** Roles the most recent Keycloak token carried (all of them, as sent). */
+  keycloakRoles: string[]
+  /** What authorisation uses: granted + token + SSO default role. */
+  effectiveRoles: string[]
   active: boolean
   source: string
   createdAt: string
@@ -292,6 +297,7 @@ export interface KeycloakSettings {
   autoProvision: boolean
   insecureSkipTls: boolean
   requireRole: string
+  defaultRole: string
   mcpOauthEnabled: boolean
   mcpClientId: string
   mcpAudiences: string[]

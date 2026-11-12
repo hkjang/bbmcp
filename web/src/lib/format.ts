@@ -60,6 +60,17 @@ export const roleLabels: Record<string, string> = {
   'bitbucket-mcp-admin': '관리 (admin)',
 }
 
+/** Keeps only the bbmcp roles in a list, e.g. what a Keycloak token carried. */
+export function bbmcpRoles(roles: string[] | undefined): string[] {
+  return (roles ?? []).filter((role) => role in roleLabels)
+}
+
+/** Role names for display, labelled when bbmcp knows them. */
+export function describeRoles(roles: string[] | undefined): string {
+  const list = roles ?? []
+  return list.length ? list.map((role) => roleLabels[role] ?? role).join(', ') : '없음'
+}
+
 export const keyStatusLabels: Record<string, string> = {
   active: '정상',
   revoked: '폐기',
